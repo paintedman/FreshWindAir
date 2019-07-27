@@ -5,8 +5,10 @@
  *  Contact us: hello@openwind.ru
  */
 
+/*
+ */
+
 #define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
-#include "version.h"
 #include <FS.h>
 #include <string.h>
 //#include <SPI.h> FIXME, remove or?
@@ -38,8 +40,7 @@
 //LED ticker
 #include <Ticker.h>
 
-//MQTT library
-#include <PubSubClient.h>
+#define SW_VERSION      "0.0.1"
 
 #define BLYNK_GREEN     "#23C48E"
 #define BLYNK_BLUE      "#04C0F8"
@@ -52,8 +53,6 @@
 
 DHT dht(DHTPIN, DHTTYPE);
 Ticker ticker;
-WiFiClient pubsubClient;
-PubSubClient mqttClient( pubsubClient );
 SoftwareSerial co2Serial(5, 4, false, 256);
 BlynkTimer timer;
 WidgetRTC rtc;
@@ -90,8 +89,7 @@ float h = 0;
 float t = 0;
 float f = 0;
 
-int average_ppm[ ] =
-{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+int average_ppm[ ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 int average_ppm_sum;
 int average_ppm_index = 0;
 int average_ppm_max = 1100;
@@ -109,22 +107,10 @@ char msg_ppm[ 10 ];
 char blynk_token[ 34 ];
 char blynk_server[ 40 ];
 char blynk_port[ 6 ];
-char mqtt_server[ 40 ];
-char mqtt_port[ 6 ];
-char mqtt_login[ 24 ];
-char mqtt_key[ 24 ];
 
-char mqtt_topic_pub[ 32 ];
-char mqtt_topic_pub_status[ 32 ];
-char mqtt_topic_pub_h[ 32 ];
-char mqtt_topic_pub_t[ 32 ];
-char mqtt_topic_pub_f[ 32 ];
-char mqtt_topic_pub_ppm[ 32 ];
-
-char Hostname[ 32 ] = "OpenWindAir";
+char Hostname[ 32 ] = "FreshWindAir";
 
 String MAC;
-char mqtt_MAC[ 14 ];
 
 int ppm;
 int uptime;
@@ -156,25 +142,16 @@ String realSize;
 String ideSize;
 
 // command to ask for data
-byte askco2[ 9 ] =
-{ 0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79 };
-byte max1k[ 9 ] =
-{ 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x03, 0xE8, 0x7B };
-byte max2k[ 9 ] =
-{ 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F };
-byte max3k[ 9 ] =
-{ 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x0B, 0xB8, 0xA3 };
+byte askco2[ 9 ] = { 0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79 };
+byte max1k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x03, 0xE8, 0x7B };
+byte max2k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F };
+byte max3k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x0B, 0xB8, 0xA3 };
 //byte max5k[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x13, 0x88, 0xCB};
-byte max5k[ 9 ] =
-{ 0xFF, 0x01, 0x99, 0x13, 0x88, 0x00, 0x00, 0x00, 0xCB };
-byte max10k[ 9 ] =
-{ 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x27, 0x10, 0x2F };
-byte abcoff[ 9 ] =
-{ 0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
-byte abcon[ 9 ] =
-{ 0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6 };
-byte calib[ 9 ] =
-{ 0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78 };
+byte max5k[ 9 ] = { 0xFF, 0x01, 0x99, 0x13, 0x88, 0x00, 0x00, 0x00, 0xCB };
+byte max10k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x27, 0x10, 0x2F };
+byte abcoff[ 9 ] = { 0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
+byte abcon[ 9 ] = { 0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6 };
+byte calib[ 9 ] = { 0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78 };
 
 BLYNK_CONNECTED()
 {
@@ -278,7 +255,6 @@ BLYNK_WRITE( V104 )
         //terminal.print(" ppm");
         //terminal.flush();
     }
-
 }
 
 BLYNK_WRITE( V105 )
@@ -317,9 +293,7 @@ BLYNK_WRITE( V106 )
         terminal.print( " ppm" );
         terminal.flush();
         //co2_limit_flag = true;
-
     }
-
 }
 
 BLYNK_WRITE( V107 )
@@ -354,12 +328,10 @@ BLYNK_WRITE( V108 )
     {
         ota_update = false;
     }
-
 }
 
 BLYNK_WRITE( V110 )
 {
-
     ledXState = param.asInt();
 
     if ( ledXState < 100 )
@@ -374,7 +346,6 @@ BLYNK_WRITE( V110 )
 
     Serial.print( "\r\nledXState: " );
     Serial.print( ledXState );
-
 }
 
 void tick()
@@ -420,13 +391,11 @@ void saveConfigCallback()
     Serial.println( "Should save config" );
     shouldSaveConfig = true;
     ticker.attach( 0.2, led_toggle_r );  // led toggle faster
-
 }
 
 // Main functions
 int readCO2()
 {
-
     char response[ 9 ] =
     { 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // for answer
 
@@ -480,7 +449,6 @@ int readCO2()
 
 void notify()
 {
-
     if ( !notify_flag && average_ppm_max > 400 && average_ppm_sum >= average_ppm_max )
     {
         notify_flag = !notify_flag;
@@ -524,12 +492,10 @@ void notify()
         Serial.print( notify_timer_max + notify_timer_start - uptime );
         Serial.print( " seconds" );
     }
-
 }
 
 void readMHZ19()
 {
-
     int i = 0;
     ppm = -1;
     Serial.print( "\n\rReading MHZ19 sensor:" );
@@ -642,12 +608,10 @@ void readMHZ19()
 //  ledRState = digitalRead(ledRPin);
 //  ledGState = digitalRead(ledGPin);
 //  ledYState = digitalRead(ledYPin);
-
 }
 
 void readDHT22()
 {
-
     DHTreadOK = false;
     int i = 0;
     Serial.print( "\n\rReading DHT22 sensor:" );
@@ -714,18 +678,15 @@ void readDHT22()
         led2.setColor( BLYNK_RED );
         Serial.print( " failed" );
     }
-
 }
 
 void readADC()
 {
-
     adcvalue = analogRead( adcPin );
     if ( Blynk.connected() )
     {
         Blynk.virtualWrite( V5, adcvalue );
     }
-
 }
 
 void SayHello()
@@ -784,26 +745,11 @@ void SayHello()
     Serial.print( "\r\nRSSI: " );
     Serial.print( WiFi.RSSI() );
     Serial.print( "\n\rMAC: " );
-    Serial.print( mqtt_MAC );
+    Serial.print( MAC );
     Serial.print( "\n\rIP: " );
     Serial.print( WiFi.localIP() );
     Serial.print( "\n\rOnline: " );
     Serial.print( online );
-    Serial.print( "\n\r======MQTT-STATUS==================================" );
-    Serial.print( "\n\rMQTT server: " );
-    Serial.print( mqtt_server );
-    Serial.print( "\n\rMQTT port: " );
-    Serial.print( mqtt_port );
-    Serial.print( "\n\rMQTT login: " );
-    Serial.print( mqtt_login );
-    Serial.print( "\n\rMQTT key: " );
-    Serial.print( mqtt_key );
-    Serial.println( "\n\rMQTT topics:" );
-    Serial.println( mqtt_topic_pub_h );
-    Serial.println( mqtt_topic_pub_t );
-    Serial.println( mqtt_topic_pub_f );
-    Serial.println( mqtt_topic_pub_ppm );
-    Serial.println( mqtt_topic_pub_status );
     Serial.println( "======END-of-STATUS================================" );
 
 }
@@ -823,7 +769,6 @@ void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
 // Setup
 void setup()
 {
-
     Serial.begin( 9600 );
     delay( 2000 );
     co2Serial.begin( 9600 );
@@ -914,10 +859,6 @@ void setup()
                     Serial.println( "\nparsed json" );
 
                     strcpy( blynk_token, json[ "blynk_token" ] );
-                    strcpy( mqtt_server, json[ "mqtt_server" ] );
-                    strcpy( mqtt_port, json[ "mqtt_port" ] );
-                    strcpy( mqtt_login, json[ "mqtt_login" ] );
-                    strcpy( mqtt_key, json[ "mqtt_key" ] );
                 }
                 else
                 {
@@ -938,14 +879,6 @@ void setup()
 
     WiFiManagerParameter
     custom_blynk_token( "blynk", "blynk token", blynk_token, 33 );   // was 32 length ???
-    WiFiManagerParameter
-    custom_mqtt_server( "server", "mqtt server", mqtt_server, 40 );
-    WiFiManagerParameter
-    custom_mqtt_port( "port", "mqtt port", mqtt_port, 5 );
-    WiFiManagerParameter
-    custom_mqtt_login( "login", "mqtt login", mqtt_login, 23 );
-    WiFiManagerParameter
-    custom_mqtt_key( "key", "mqtt key", mqtt_key, 23 );
 
     //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
@@ -974,10 +907,6 @@ void setup()
     wifiManager.setSaveConfigCallback( saveConfigCallback );
 
     wifiManager.addParameter( &custom_blynk_token );   //add all your parameters here
-    wifiManager.addParameter( &custom_mqtt_server );
-    wifiManager.addParameter( &custom_mqtt_port );
-    wifiManager.addParameter( &custom_mqtt_login );
-    wifiManager.addParameter( &custom_mqtt_key );
 
     //sets timeout until configuration portal gets turned off
     //useful to make it all retry or go to sleep, in seconds
@@ -988,8 +917,7 @@ void setup()
 
     if ( !wifiManager.autoConnect( "OpenWind - tap to config" ) )
     {
-
-        if ( mqtt_server[ 0 ] != '\0' || blynk_token[ 0 ] != '\0' )
+        if ( blynk_token[ 0 ] != '\0' )
         {
 
             Serial.println( "Failed to go online for Blynk and MQTT, restarting.." );
@@ -1002,21 +930,15 @@ void setup()
             online = false;
             tones( 13, 2000, 50 );
         }
-
     }
 
     ticker.detach();
 
     if ( online )
     {
-
         tones( 13, 1500, 30 );
 
         strcpy( blynk_token, custom_blynk_token.getValue() );    //read updated parameters
-        strcpy( mqtt_server, custom_mqtt_server.getValue() );
-        strcpy( mqtt_port, custom_mqtt_port.getValue() );
-        strcpy( mqtt_login, custom_mqtt_login.getValue() );
-        strcpy( mqtt_key, custom_mqtt_key.getValue() );
 
         if ( shouldSaveConfig )
         {      //save the custom parameters to FS
@@ -1024,10 +946,6 @@ void setup()
             DynamicJsonBuffer jsonBuffer;
             JsonObject & json = jsonBuffer.createObject();
             json[ "blynk_token" ] = blynk_token;
-            json[ "mqtt_server" ] = mqtt_server;
-            json[ "mqtt_port" ] = mqtt_port;
-            json[ "mqtt_login" ] = mqtt_login;
-            json[ "mqtt_key" ] = mqtt_key;
 
             File configFile = SPIFFS.open( "/config.json", "w" );
             if ( !configFile )
@@ -1043,7 +961,6 @@ void setup()
             delay( 1000 );
             Serial.println( "Restart ESP to apply new WiFi settings.." );
             ESP.restart();
-
         }
 
         Serial.print( "\n\rWiFi network: " );
@@ -1072,33 +989,10 @@ void setup()
             Serial.print( "\n\rblynk auth token not set" );
         }
 
-        Serial.print( "\n\rOpenWindAir is ready!" );
-
-        uint16_t mqtt_portnum = strtoul( mqtt_port, NULL, 10 );
-
-        mqttClient.setServer( mqtt_server, mqtt_portnum );
-        //mqttClient.setCallback(callback);
-
-        strcat( mqtt_topic_pub, mqtt_login );
-        strcat( mqtt_topic_pub, "/" );
-        strcat( mqtt_topic_pub, Hostname );
-
-        strcat( mqtt_topic_pub_h, mqtt_topic_pub );
-        strcat( mqtt_topic_pub_t, mqtt_topic_pub );
-        strcat( mqtt_topic_pub_f, mqtt_topic_pub );
-        strcat( mqtt_topic_pub_ppm, mqtt_topic_pub );
-        strcat( mqtt_topic_pub_status, mqtt_topic_pub );
-
-        strcat( mqtt_topic_pub_h, "/h" );
-        strcat( mqtt_topic_pub_t, "/t" );
-        strcat( mqtt_topic_pub_f, "/f" );
-        strcat( mqtt_topic_pub_ppm, "/ppm" );
-        strcat( mqtt_topic_pub_status, "/status" );
+        Serial.print( "\n\rFreshWindAir is ready!" );
 
         MAC = WiFi.macAddress();
         MAC.replace( ":", "" );
-        MAC.toCharArray( mqtt_MAC, 13 );
-
     }
 
     timer.setInterval( 1000L, sendUptime );
@@ -1107,98 +1001,14 @@ void setup()
     timer.setInterval( 30000L, readDHT22 );
     timer.setInterval( 60000L, readADC );
     timer.setInterval( 30000L, sendResults );
-    timer.setInterval( 300000L, mqttsend );
 
     //Serial.setDebugOutput(true);
 
     ESP.wdtDisable();
 }
 
-// Main functions 2
-void reconnect()
-{
-    //Serial.print("\n\rReading D");
-    if ( mqtt_server[ 0 ] != '\0' )
-    {
-        // Loop until we're reconnected
-        while ( !mqttClient.connected() )
-        {
-            Serial.print( "\n\rAttempting MQTT connection..." );
-            // Attempt to connect
-            if ( mqttClient.connect( mqtt_MAC, mqtt_login, mqtt_key ) )
-            {
-                Serial.print( "connected" );
-                // Once connected, publish an announcement...
-                mqttClient.publish( mqtt_topic_pub_status, "online" );
-                // ... and resubscribe
-                //mqttClient.subscribe("inTopic");
-            }
-            else
-            {
-                int i = 0;
-                while ( i < 3 )
-                {
-                    Serial.print( "failed, rc=" );
-                    Serial.print( mqttClient.state() );
-                    Serial.println( " try again in 1 seconds" );
-                    delay( 1000 );
-                    i++;
-                }
-                break;
-            }
-        }
-    }
-    else
-    {
-        Serial.print( "\n\rMQTT server not set" );
-    }
-}
-
-void mqttsend()
-{
-
-    if ( online )
-    {
-
-        if ( !mqttClient.connected() )
-        {
-            reconnect();
-        }
-
-        if ( mqttClient.connected() )
-        {
-            mqttClient.loop();
-
-            char msg_h[ 10 ];
-            char msg_t[ 10 ];
-            char msg_f[ 10 ];
-            char msg_ppm[ 10 ];
-
-            dtostrf( h, 2, 2, msg_h );
-            dtostrf( t, 2, 2, msg_t );
-            dtostrf( f, 2, 2, msg_f );
-            dtostrf( average_ppm_sum, 2, 2, msg_ppm );
-
-            Serial.print( "\n\rSending data to " );
-            Serial.print( mqtt_server );
-            if ( DHTreadOK )
-            {
-                mqttClient.publish( mqtt_topic_pub_h, msg_h );
-                mqttClient.publish( mqtt_topic_pub_t, msg_t );
-                mqttClient.publish( mqtt_topic_pub_f, msg_f );
-            }
-            if ( average_ppm_sum != 0 )
-            {
-                mqttClient.publish( mqtt_topic_pub_ppm, msg_ppm );
-            }
-            mqttClient.disconnect();
-        }
-    }
-}
-
 void sendUptime()
 {
-
     uptime = millis() / 1000;
 
     seconds = millis() / 1000;
@@ -1215,16 +1025,13 @@ void sendUptime()
         currentTime = String( hour() ) + ":" + minute() + ":" + second();
         currentDate = String( day() ) + "/" + month() + "/" + year();
     }
-
 }
 
 void sendResults()
 {
-
     Serial.println( "\n\r===================================================" );
     if ( DHTreadOK )
     {
-
         Blynk.virtualWrite( V1, h );
         Blynk.virtualWrite( V2, t );
         Blynk.virtualWrite( V3, f );
@@ -1245,7 +1052,6 @@ void sendResults()
         Serial.print( "C \\ " );
         Serial.print( f );
         Serial.print( "F" );
-
     }
     else
     {
@@ -1332,7 +1138,6 @@ void sendResults()
         Serial.print( "\n\rC02 average: " );
         Serial.print( average_ppm_sum );
         Serial.print( " ppm" );
-
     }
     else
     {
@@ -1347,7 +1152,6 @@ void sendResults()
         terminal.print( average_ppm_sum );
         terminal.print( ") ppm" );
         terminal.flush();
-
     }
 
     Serial.print( "\r\nADC: " );
@@ -1394,13 +1198,11 @@ void sendResults()
     terminal.flush();
 
     Serial.println( "\n\r===================================================" );
-
 }
 
 // LOOP
 void loop()
 {
-
     if ( WiFi.status() == WL_CONNECTED )
     {
         wifilost_flag = false;
@@ -1427,7 +1229,6 @@ void loop()
                 Serial.print( Blynk.connected() );
             }
         }
-
     }
 
     if ( WiFi.status() != WL_CONNECTED && online )
@@ -1448,20 +1249,11 @@ void loop()
     timer.run();
     ESP.wdtFeed();
 
-    //digitalWrite(ledRPin, LOW);
-    //digitalWrite(ledGPin, LOW);
-    //digitalWrite(ledYPin, LOW);
-
-    //digitalWrite(ledRPin, HIGH);
-    //digitalWrite(ledGPin, HIGH);
-    //digitalWrite(ledYPin, HIGH);
-
     buttonS1State = digitalRead( buttonS1Pin );
     buttonS2State = digitalRead( buttonS2Pin );
 
     if ( buttonS1State == 0 )
     {
-
         tones( 13, 1000, 50 );
         delay( 50 );
         tones( 13, 1000, 50 );
@@ -1481,76 +1273,7 @@ void loop()
         tones( 13, 1000, 50 );
         delay( 50 );
         tones( 13, 1000, 50 );
-
-//    int relayState = digitalRead(relayPin);  // get the current state of relay IO15 pin
-//    digitalWrite(relayPin, !relayState);     // set pin to the opposite state
-//    
-//    Serial.println("\n\rRelay tick");
-//    delay(1000);
-//
-//    relayState = digitalRead(relayPin);  // get the current state of relay IO15 pin
-//    digitalWrite(relayPin, !relayState);     // set pin to the opposite state
-//    
-//    Serial.println("\n\rRelay tick");
-//    delay(1000);
-//
-//    relayState = digitalRead(relayPin);  // get the current state of relay IO15 pin
-//    digitalWrite(relayPin, !relayState);     // set pin to the opposite state
-//    
-//    Serial.println("\n\rRelay tick");
-//    delay(1000);
-
     }
-
-    int updatein = 10;
-    while ( ( buttonS2State == 0 && WiFi.status() == WL_CONNECTED ) || ota_update )
-    {
-        tones( 13, 5000, 50 );
-        delay( 100 );
-        led_toggle_r();
-        tones( 13, 5000, 50 );
-        delay( 100 );
-        led_toggle_g();
-        tones( 13, 5000, 50 );
-        delay( 100 );
-        led_toggle_y();
-
-        String OTA_url;
-        OTA_url = "http://openwind.ru/ota/release/air/OpenWindAir" + realSize + ".bin";
-        Serial.print( "\r\nOTA filename: " );
-        Serial.print( OTA_url );
-
-        if ( updatein == 0 )
-        {
-
-            Serial.print( "\r\nOTA update starting. Please don't power off" );
-
-            t_httpUpdate_return ret = ESPhttpUpdate.update( OTA_url );
-            Serial.print( ret );
-
-            switch ( ret )
-            {
-                case HTTP_UPDATE_FAILED :
-                    Serial.printf( "HTTP_UPDATE_FAILD Error (%d): %s", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str() );
-                    break;
-
-                case HTTP_UPDATE_NO_UPDATES :
-                    Serial.println( "HTTP_UPDATE_NO_UPDATES" );
-                    break;
-
-                case HTTP_UPDATE_OK :
-                    Serial.println( "HTTP_UPDATE_OK" );
-                    break;
-            }
-
-        }
-        updatein--;
-        buttonS2State = digitalRead( buttonS2Pin );
-    }
-
-    //digitalWrite(ledRPin, ledRState);
-    //digitalWrite(ledGPin, ledGState);
-    //digitalWrite(ledYPin, ledYState);
 
     while ( Serial.available() > 0 )
     {
@@ -1560,8 +1283,6 @@ void loop()
         {
             SayHello();
             tones( 13, 1000, 100 );
-
         }
     }
-
 }
