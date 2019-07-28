@@ -6,12 +6,14 @@
  */
 
 /*
+ * 07.2019 dmitriev.dd@hotmail.com
  */
 
 #define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
 #include <FS.h>
 #include <string.h>
-//#include <SPI.h> FIXME, remove or?
+#include <MHZ19.h>
+#include <vector>
 
 //blynk
 #include <ESP8266WiFi.h>
@@ -27,10 +29,6 @@
 // https://github.com/adafruit/DHT-sensor-library
 #include <DHT.h>
 
-// OTA update
-#include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-
 //WiFiManager
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
@@ -39,6 +37,10 @@
 
 //LED ticker
 #include <Ticker.h>
+
+/* -------------------------
+ *        Definitions
+ * ------------------------- */ 
 
 #define SW_VERSION      "0.0.1"
 
@@ -51,11 +53,35 @@
 #define DHTPIN 12
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 
+#define FILTER_POINTS       (4)
+#define CO2_WARNING_SET     (1000)
+#define CO2_WARNING_RESET   (700)
+
+#define TIMER_SEND_UPTIME   (5000L)
+#define TIMER_NOTIFY        (30000L)
+#define TIMER_READ_MHZ19    (5000L)
+#define TIMER_READ_DHT22    (20000L)
+#define TIMER_READ_ADC      (60000L)
+#define TIMER_SEND_RESULTS  (10000L)
+
+/* -------------------------
+ *      Code starts here
+ * ------------------------- */ 
+
 DHT dht(DHTPIN, DHTTYPE);
 Ticker ticker;
 SoftwareSerial co2Serial(5, 4, false, 256);
 BlynkTimer timer;
 WidgetRTC rtc;
+MHZ19 mhz19;
+
+typedef enum 
+{
+    Led_None     = 0,
+    Led_Green    = 1 << 0,
+    Led_Yellow   = 1 << 1,
+    Led_Red      = 1 << 2,
+} LedColors;
 
 bool connectBlynk()
 {
@@ -78,31 +104,23 @@ int buttonS2State = 1;
 
 int ledXState = 400;
 
-int ledRState = 0;
-int ledGState = 0;
-int ledYState = 0;
-
 float old_h = 0;
 float old_t = 0;
 float old_f = 0;
 float h = 0;
 float t = 0;
 float f = 0;
+float hi = 0;   // heat index
 
-int average_ppm[ ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+std::vector<int> ppm_values( FILTER_POINTS, 0 );
 int average_ppm_sum;
-int average_ppm_index = 0;
-int average_ppm_max = 1100;
+int average_ppm_prev;
+int average_ppm_diff;
 
 int co2_limit = 5; //allowed value of CO2 limit 2, 5 (2k, 5k). 5k default
 bool co2_limit_flag = false;
 
 float temp_correction = 3; // default enabled for internal DHT sensor. -3C -1F
-
-char msg_h[ 10 ];
-char msg_t[ 10 ];
-char msg_f[ 10 ];
-char msg_ppm[ 10 ];
 
 char blynk_token[ 34 ];
 char blynk_server[ 40 ];
@@ -110,15 +128,13 @@ char blynk_port[ 6 ];
 
 char Hostname[ 32 ] = "FreshWindAir";
 
-String MAC;
-
 int ppm;
 int uptime;
 
 bool DHTreadOK = false; //false if not read
 
 bool notify_flag = false; //send notify to user if true
-bool notify_flag_beep = true; //beep works if true
+bool notify_flag_beep = false; //beep works if true
 int notify_timer_start; //not allow to send notification too often.
 int notify_timer_max = 600; //interval of notify 10 min by default
 
@@ -132,7 +148,6 @@ int days, hours, minutes, seconds;
 int adcvalue;
 
 bool online = true;
-bool ota_update = false;
 
 String currentTime;
 String currentDate;
@@ -140,18 +155,6 @@ String currentDate;
 // Check flash size
 String realSize;
 String ideSize;
-
-// command to ask for data
-byte askco2[ 9 ] = { 0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79 };
-byte max1k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x03, 0xE8, 0x7B };
-byte max2k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F };
-byte max3k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x0B, 0xB8, 0xA3 };
-//byte max5k[9] = {0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x13, 0x88, 0xCB};
-byte max5k[ 9 ] = { 0xFF, 0x01, 0x99, 0x13, 0x88, 0x00, 0x00, 0x00, 0xCB };
-byte max10k[ 9 ] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x27, 0x10, 0x2F };
-byte abcoff[ 9 ] = { 0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
-byte abcon[ 9 ] = { 0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6 };
-byte calib[ 9 ] = { 0xFF, 0x01, 0x87, 0x00, 0x00, 0x00, 0x00, 0x00, 0x78 };
 
 BLYNK_CONNECTED()
 {
@@ -172,21 +175,73 @@ WidgetLED led1( V10 );
 WidgetLED led2( V11 );
 WidgetTerminal terminal( V100 );
 
+static void setLeds( int colors )
+{
+    analogWrite( ledGPin, 0 );
+    analogWrite( ledYPin, 0 );
+    analogWrite( ledRPin, 0 );
+
+    if ( colors & Led_Green ) 
+    {
+        analogWrite( ledGPin, ledXState );
+    }
+    if ( colors & Led_Yellow ) 
+    {
+        analogWrite( ledYPin, ledXState );
+    }
+    if ( colors & Led_Red )
+    {
+        analogWrite( ledRPin, ledXState );
+    }
+}
+
+static void restartMcu()
+{
+    terminal.print( "\n\rRestart in 3..2..1.." );
+    terminal.flush();
+    Serial.println( "\n\rRestart in 3..2..1.." );
+
+    setLeds( ( LedColors ) Led_Green | Led_Yellow | Led_Red );
+    
+    ESP.restart();
+}
+
+static void resetWifiSettings() 
+{
+    terminal.print( "\n\rReset WiFi settings in 3..2..1.." );
+    terminal.flush();
+    Serial.println( "\n\rReset WiFi settings in 3..2..1.." );
+
+    // wifiManager.resetSettings(); 
+    restartMcu();
+}
+
+static void formatFlash() 
+{
+    terminal.print( "\n\rFormat flash in 3..2..1.." );
+    terminal.flush();
+    Serial.println( "\n\rFormat flash in 3..2..1.." );
+
+    SPIFFS.format();
+    restartMcu();
+}
+
+static int getAverage( std::vector<int> v ) 
+{
+    int sum = 0;
+    for ( size_t i = 0; i < v.size(); ++i ) 
+    {
+        sum += v[ i ];
+    }
+    return sum / v.size();
+}
+
 BLYNK_WRITE( V101 )
 {
     int v101 = param.asInt(); // assigning incoming value from pin V10x to a variable
     if ( v101 == 1 )
     {
-        terminal.print( "\n\rRestart in 3..2..1.." );
-        terminal.flush();
-        Serial.println( "\n\rRestart in 3..2..1.." );
-        ledRState = ledXState;
-        ledGState = ledXState;
-        ledYState = ledXState;
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledGPin, ledGState );
-        analogWrite( ledYPin, ledYState );
-        ESP.restart();
+        restartMcu();
     }
 }
 
@@ -195,16 +250,7 @@ BLYNK_WRITE( V102 )
     int v102 = param.asInt();
     if ( v102 == 1 )
     {
-        terminal.print( "\n\rReset WiFi settings in 3..2..1.." );
-        terminal.flush();
-        Serial.println( "\n\rReset WiFi settings in 3..2..1.." );
-        ledRState = ledXState;
-        ledGState = ledXState;
-        ledYState = ledXState;
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledGPin, ledGState );
-        analogWrite( ledYPin, ledYState );
-        //wifiManager.resetSettings(); // FIXME
+        resetWifiSettings();
     }
 }
 
@@ -213,47 +259,7 @@ BLYNK_WRITE( V103 )
     int v103 = param.asInt();
     if ( v103 == 1 )
     {
-        terminal.print( "\n\rFormat flash in 3..2..1.." );
-        terminal.flush();
-        Serial.println( "\n\rFormat flash in 3..2..1.." );
-        ledRState = ledXState;
-        ledGState = ledXState;
-        ledYState = ledXState;
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledGPin, ledGState );
-        analogWrite( ledYPin, ledYState );
-        SPIFFS.format();
-        ESP.restart();
-    }
-}
-
-BLYNK_WRITE( V104 )
-{
-    average_ppm_max = param.asInt();
-
-    if ( average_ppm_max <= 400 )
-    {
-        average_ppm_max = 400;
-        Serial.print( "\r\nNotify disabled" );
-        //terminal.print("\r\nNotify disabled");
-        //terminal.flush();  
-        notify_flag = false;
-    }
-
-    if ( average_ppm_max > 5000 )
-    {
-        average_ppm_max = 5000;
-    }
-
-    if ( average_ppm_max > 400 && average_ppm_max <= 5000 )
-    {
-        Serial.print( "\r\nNotify level: " );
-        Serial.print( average_ppm_max );
-        Serial.print( " ppm" );
-        //terminal.print("\r\nNotify level: ");
-        //terminal.print(average_ppm_max);
-        //terminal.print(" ppm");
-        //terminal.flush();
+        formatFlash();
     }
 }
 
@@ -306,28 +312,6 @@ BLYNK_WRITE( V107 )
     terminal.print( "\r\ntemp_correction (C): " );
     terminal.print( temp_correction );
     terminal.flush();
-
-//  if (v107 > 0){
-//    temp_correction = v107;    
-//  }
-//  else{
-//   temp_correction = 0; 
-//  }
-
-}
-
-BLYNK_WRITE( V108 )
-{
-    int v108 = param.asInt();
-
-    if ( v108 != 0 )
-    {
-        ota_update = true;
-    }
-    else
-    {
-        ota_update = false;
-    }
 }
 
 BLYNK_WRITE( V110 )
@@ -374,7 +358,10 @@ void led_toggle_y()
     digitalWrite( ledYPin, !state );     // set Pin to the opposite state
 }
 
-// WiFiManager voids
+/* -------------------------
+ *      WiFi Manager cb
+ * ------------------------- */ 
+
 void configModeCallback( WiFiManager *myWiFiManager )
 {
     //gets called when WiFiManager enters configuration mode
@@ -387,111 +374,62 @@ void configModeCallback( WiFiManager *myWiFiManager )
 }
 
 void saveConfigCallback()
-{  //callback notifying us of the need to save config
+{  
+    //callback notifying us of the need to save config
     Serial.println( "Should save config" );
     shouldSaveConfig = true;
     ticker.attach( 0.2, led_toggle_r );  // led toggle faster
 }
 
-// Main functions
-int readCO2()
-{
-    char response[ 9 ] =
-    { 0, 0, 0, 0, 0, 0, 0, 0, 0 }; // for answer
-
-    if ( co2_limit_flag )
-    {
-        switch ( co2_limit )
-        {
-
-            case '2' :
-                co2Serial.write( max2k, 9 );
-                break;
-            case '5' :
-                co2Serial.write( max5k, 9 );
-                break;
-            default :
-                co2Serial.write( max5k, 9 );
-        }
-    }
-
-    co2_limit_flag = false;
-
-    co2Serial.write( askco2, 9 ); //request PPM CO2
-    delay( 1 );
-
-    while ( co2Serial.available() > 0 && ( unsigned char ) co2Serial.peek() != 0xFF )
-    {
-        co2Serial.read();
-    }
-
-    memset( response, 0, 9 );
-    co2Serial.readBytes( response, 9 );
-
-    if ( response[ 0 ] != 0xFF )
-    {
-        Serial.print( "\n\rWrong starting byte from co2 sensor!" );
-        return -1;
-    }
-
-    if ( response[ 1 ] != 0x86 )
-    {
-        Serial.print( "\n\rWrong command from co2 sensor!" );
-        return -1;
-    }
-
-    int responseHigh = ( int ) response[ 2 ];
-    int responseLow = ( int ) response[ 3 ];
-    int ppm = ( 256 * responseHigh ) + responseLow;
-    Serial.print( " ok" );
-    return ppm;
-}
+/* -------------------------
+ *      Main functions
+ * ------------------------- */ 
 
 void notify()
 {
-    if ( !notify_flag && average_ppm_max > 400 && average_ppm_sum >= average_ppm_max )
-    {
-        notify_flag = !notify_flag;
-        notify_timer_start = uptime;
-    }
-
-    if ( notify_flag && average_ppm_max > average_ppm_sum )
-    {
-        notify_flag = !notify_flag;
-    }
-
-    if ( notify_flag && ( ( uptime - notify_timer_start ) > notify_timer_max ) )
-    {
-
-        Blynk.notify( String( "CO2 level > " ) + average_ppm_sum + ". Please Open Window." );
-        terminal.print( "\n\rSending notify to phone. " );
-        terminal.print( "ppm > " );
-        terminal.print( average_ppm_sum );
-        terminal.flush();
-        Serial.print( "\n\rSending notify to phone. " );
-        Serial.print( "\n\rCO2 level > " );
-        Serial.print( average_ppm_sum );
-
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
-
-        notify_flag = false;
-    }
-
-    if ( notify_flag )
-    {
-        terminal.print( "\n\rNotify in: " );
-        terminal.print( notify_timer_max + notify_timer_start - uptime );
-        terminal.print( " seconds" );
-        terminal.flush();
-
-        Serial.print( "\n\rNotify in: " );
-        Serial.print( notify_timer_max + notify_timer_start - uptime );
-        Serial.print( " seconds" );
-    }
+//    if ( !notify_flag && average_ppm_max > 400 && average_ppm_sum >= average_ppm_max )
+//    {
+//        notify_flag = !notify_flag;
+//        notify_timer_start = uptime;
+//    }
+//
+//    if ( notify_flag && average_ppm_max > average_ppm_sum )
+//    {
+//        notify_flag = !notify_flag;
+//    }
+//
+//    if ( notify_flag && ( ( uptime - notify_timer_start ) > notify_timer_max ) )
+//    {
+//
+//        Blynk.notify( String( "CO2 level > " ) + average_ppm_sum + ". Please Open Window." );
+//        terminal.print( "\n\rSending notify to phone. " );
+//        terminal.print( "ppm > " );
+//        terminal.print( average_ppm_sum );
+//        terminal.flush();
+//        Serial.print( "\n\rSending notify to phone. " );
+//        Serial.print( "\n\rCO2 level > " );
+//        Serial.print( average_ppm_sum );
+//
+//        tones( 13, 1000, 50 );
+//        delay( 50 );
+//        tones( 13, 1000, 50 );
+//        delay( 50 );
+//        tones( 13, 1000, 50 );
+//
+//        notify_flag = false;
+//    }
+//
+//    if ( notify_flag )
+//    {
+//        terminal.print( "\n\rNotify in: " );
+//        terminal.print( notify_timer_max + notify_timer_start - uptime );
+//        terminal.print( " seconds" );
+//        terminal.flush();
+//
+//        Serial.print( "\n\rNotify in: " );
+//        Serial.print( notify_timer_max + notify_timer_start - uptime );
+//        Serial.print( " seconds" );
+//    }
 }
 
 void readMHZ19()
@@ -502,112 +440,64 @@ void readMHZ19()
     while ( i < 5 && ppm == -1 )
     {
         delay( i * 50 );
-        ppm = readCO2();
+        ppm = mhz19.getCO2();
         i++;
     }
-
     if ( ppm == -1 )
     {
         led2.on();
         led2.setColor( BLYNK_YELLOW );
         Serial.print( " failed" );
+
+        return;
+    }
+    else
+    {
+        led2.on();
+        led2.setColor( BLYNK_GREEN );
+        Serial.print( " ok" );
+    }
+    
+    ppm_values.erase( ppm_values.begin() );
+    ppm_values.push_back( ppm );
+
+    average_ppm_sum = getAverage( ppm_values );
+    average_ppm_diff = average_ppm_sum - average_ppm_prev;
+
+    /* Stop led blinking if active */
+    if ( ticker.active() )
+    {
+        ticker.detach();
     }
 
-    if ( average_ppm_sum == 0 )
+    /* Set led indication */
+    if ( average_ppm_sum <= 700 )
     {
-
-        if ( ticker.active() )
-            ticker.detach();
-        ledRState = 0;
-        ledYState = 0;
-        ledGState = ledXState + 1;
-
-//    if (ledGState != ledXState){
-//      
-//      analogWrite(ledGPin, ledGState);
-//    }
-        analogWrite( ledGPin, ledGState );
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledYPin, ledYState );
-    }
-    if ( average_ppm_sum > 0 && average_ppm_sum <= 900 )
-    {
-
-        if ( ticker.active() )
-            ticker.detach();
-        ledRState = 0;
-        ledYState = 0;
-
-        if ( ledGState != ledXState )
-        {
-            ledGState = ledXState;
-//      ledGState = 0;
-            analogWrite( ledGPin, ledGState );
-        }
-
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledYPin, ledYState );
+        setLeds( Led_Green );
 
         led1.on();
         led1.setColor( BLYNK_GREEN );
-
         led2.on();
         led2.setColor( BLYNK_GREEN );
-
     }
-
-    if ( average_ppm_sum > 900 && average_ppm_sum < 1400 )
+    else if ( average_ppm_sum <= 1200)
     {
-
-        if ( ticker.active() )
-            ticker.detach();
-        ledRState = 0;
-        ledGState = 0;
-
-        if ( ledYState != ledXState )
-        {
-            ledYState = ledXState;
-            analogWrite( ledYPin, ledYState );
-        }
-
-        analogWrite( ledRPin, ledRState );
-        analogWrite( ledGPin, ledGState );
+        setLeds( Led_Yellow );
 
         led1.on();
         led1.setColor( BLYNK_YELLOW );
-
         led2.on();
         led2.setColor( BLYNK_GREEN );
     }
-
-    if ( average_ppm_sum >= 1400 )
+    else 
     {
-
-        ledYState = 0;
-        ledGState = 0;
-
-        //ticker.attach(0.5, led_toggle_r);
-
-        if ( ledRState != ledXState )
-        {
-            ledRState = ledXState;
-            analogWrite( ledRPin, ledRState );
-        }
-
-        analogWrite( ledYPin, ledYState );
-        analogWrite( ledGPin, ledGState );
+        setLeds( Led_Red );
 
         led1.on();
         led1.setColor( BLYNK_RED );
-
         led2.on();
         led2.setColor( BLYNK_GREEN );
-
     }
-
-//  ledRState = digitalRead(ledRPin);
-//  ledGState = digitalRead(ledGPin);
-//  ledYState = digitalRead(ledYPin);
 }
 
 void readDHT22()
@@ -621,6 +511,7 @@ void readDHT22()
         h = dht.readHumidity();
         t = dht.readTemperature();
         f = dht.readTemperature( true ); // Read temperature as Fahrenheit (isFahrenheit = true)
+        hi = dht.computeHeatIndex( t, h, false );        
 
         if ( isnan( h ) || isnan( t ) || isnan( f ) )
         {
@@ -691,7 +582,7 @@ void readADC()
 
 void SayHello()
 {
-    Serial.print( "\n\r======SYSTEM-STATUS================================" );
+    Serial.print( "\n\r====== SYSTEM-STATUS ================================" );
     Serial.print( "\n\rDevice name: " );
     Serial.print( Hostname );
     Serial.print( "\r\nSoftware version: " );
@@ -714,20 +605,20 @@ void SayHello()
     Serial.print( currentDate );
     Serial.print( "\r\nUpTime: " );
     Serial.print( uptime );
-    Serial.print( "\n\r======BLYNK-STATUS=================================" );
+    Serial.print( "\n\r====== BLYNK-STATUS =================================" );
     Serial.print( "\n\rBlynk token: " );
     Serial.print( blynk_token );
     Serial.print( "\n\rBlynk connected: " );
     Serial.print( Blynk.connected() );
-    if ( average_ppm_max == 400 )
-    {
-        Serial.print( "\r\nNotify level: disabled" );
-    }
-    else
-    {
-        Serial.print( "\r\nNotify level: " );
-        Serial.print( average_ppm_max );
-    }
+//    if ( average_ppm_max == 400 )
+//    {
+//        Serial.print( "\r\nNotify level: disabled" );
+//    }
+//    else
+//    {
+//        Serial.print( "\r\nNotify level: " );
+//        Serial.print( average_ppm_max );
+//    }
     Serial.print( "\r\nBeep: " );
     Serial.print( notify_flag_beep );
     Serial.print( "\r\nCO2 limit: " );
@@ -737,7 +628,7 @@ void SayHello()
     Serial.print( " C" );
     Serial.print( "\r\nledXState: " );
     Serial.print( ledXState );
-    Serial.print( "\n\r======NETWORK-STATUS===============================" );
+    Serial.print( "\n\r====== NETWORK-STATUS ===============================" );
     Serial.print( "\n\rWiFi network: " );
     Serial.print( WiFi.SSID() );
     Serial.print( "\n\rWiFi status: " );
@@ -745,12 +636,12 @@ void SayHello()
     Serial.print( "\r\nRSSI: " );
     Serial.print( WiFi.RSSI() );
     Serial.print( "\n\rMAC: " );
-    Serial.print( MAC );
+    Serial.print( WiFi.macAddress() );
     Serial.print( "\n\rIP: " );
     Serial.print( WiFi.localIP() );
     Serial.print( "\n\rOnline: " );
     Serial.print( online );
-    Serial.println( "======END-of-STATUS================================" );
+    Serial.println( "====== END-of-STATUS ================================" );
 
 }
 
@@ -769,10 +660,14 @@ void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
 // Setup
 void setup()
 {
-    Serial.begin( 9600 );
+    Serial.begin( 115200 );
     delay( 2000 );
+
     co2Serial.begin( 9600 );
+    mhz19.begin( co2Serial );
+    mhz19.autoCalibration();
     delay( 2000 );
+
     dht.begin();
 
     pinMode( buttonS1Pin, INPUT );
@@ -785,42 +680,15 @@ void setup()
 
     delay( 2000 );
 
-    switch ( co2_limit )
-    {
-        case '2' :
-            co2Serial.write( max2k, 9 );
-            break;
-        case '5' :
-            co2Serial.write( max5k, 9 );
-            break;
-        default :
-            co2Serial.write( max5k, 9 );
-    }
-
-//  delay(500);
-//  co2Serial.write(abcoff, 9);
-//  delay(500);
-//  co2Serial.write(calib, 9);
-//  delay(500);
-//  co2Serial.write(max5k, 9);
-//  delay(500);
-//  co2Serial.write(max10k, 9);
-    delay( 500 );
-    co2Serial.write( askco2, 9 );
     tones( 13, 1000, 100 );
 
     // start ticker with 0.5 because we start in AP mode and try to connect
     ticker.attach( 0.6, led_toggle_r ); //tick
 
-    // clean FS, for testing
-    //SPIFFS.format();
-
     // Check flash size
     realSize = String( ESP.getFlashChipRealSize() );
     ideSize = String( ESP.getFlashChipSize() );
     bool flashCorrectlyConfigured = realSize.equals( ideSize );
-
-    //todo smth
 
     if ( flashCorrectlyConfigured )
     {
@@ -847,8 +715,7 @@ void setup()
                 Serial.println( "opened config file" );
                 size_t size = configFile.size();
                 // Allocate a buffer to store contents of the file.
-                std
-                ::unique_ptr<char[]> buf(new char[size]);
+                std::unique_ptr<char[]> buf(new char[size]);
 
                 configFile.readBytes( buf.get(), size );
                 DynamicJsonBuffer jsonBuffer;
@@ -884,21 +751,14 @@ void setup()
     //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
 
-    //reset settings - for testing
-    //wifiManager.resetSettings();
-
     // WiFi credentials will be reseted if button S1 will be pressed during boot
     buttonS1State = digitalRead( buttonS1Pin );
 
     if ( buttonS1State == 0 )
     {
-        Serial.println( "ResetWiFi settings" );
+        Serial.println( "Reset Wi-Fi settings" );
         wifiManager.resetSettings();
     }
-
-    //set minimu quality of signal so it ignores AP's under that quality
-    //defaults to 8%
-    //wifiManager.setMinimumSignalQuality();
 
     //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
     wifiManager.setAPCallback( configModeCallback );
@@ -915,12 +775,11 @@ void setup()
     //fetches ssid and pass and tries to connect
     //if it does not connect it starts an access point with the specified name
 
-    if ( !wifiManager.autoConnect( "OpenWind - tap to config" ) )
+    if ( !wifiManager.autoConnect( "FreshWind - tap to config" ) )
     {
         if ( blynk_token[ 0 ] != '\0' )
         {
-
-            Serial.println( "Failed to go online for Blynk and MQTT, restarting.." );
+            Serial.println( "Failed to go online for Blynk, restarting.." );
             delay( 2000 );
             ESP.restart();
         }
@@ -941,7 +800,8 @@ void setup()
         strcpy( blynk_token, custom_blynk_token.getValue() );    //read updated parameters
 
         if ( shouldSaveConfig )
-        {      //save the custom parameters to FS
+        {      
+            //save the custom parameters to FS
             Serial.println( "saving config" );
             DynamicJsonBuffer jsonBuffer;
             JsonObject & json = jsonBuffer.createObject();
@@ -976,9 +836,6 @@ void setup()
         {
             connectBlynk();
             Blynk.config( blynk_token );
-            //Blynk.config(blynk_token, "b.openwind.ru", 8080);
-            //Blynk.config(blynk_token, IPAddress(192,168,0,250), 8080);
-
             Blynk.connect();
             setSyncInterval( 10 * 60 ); // interval of RTC sync
             Serial.print( "\n\rblynk token: " );
@@ -990,19 +847,16 @@ void setup()
         }
 
         Serial.print( "\n\rFreshWindAir is ready!" );
-
-        MAC = WiFi.macAddress();
-        MAC.replace( ":", "" );
     }
 
-    timer.setInterval( 1000L, sendUptime );
-    timer.setInterval( 30000L, notify );
-    timer.setInterval( 30000L, readMHZ19 );
-    timer.setInterval( 30000L, readDHT22 );
-    timer.setInterval( 60000L, readADC );
-    timer.setInterval( 30000L, sendResults );
-
-    //Serial.setDebugOutput(true);
+    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
+    timer.setInterval( TIMER_NOTIFY, notify );
+    timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
+    timer.setInterval( TIMER_READ_DHT22, readDHT22 );
+    timer.setInterval( TIMER_READ_ADC, readADC );
+    timer.setInterval( TIMER_SEND_RESULTS, sendResults );
+    
+    // Serial.setDebugOutput( true );
 
     ESP.wdtDisable();
 }
@@ -1030,132 +884,6 @@ void sendUptime()
 void sendResults()
 {
     Serial.println( "\n\r===================================================" );
-    if ( DHTreadOK )
-    {
-        Blynk.virtualWrite( V1, h );
-        Blynk.virtualWrite( V2, t );
-        Blynk.virtualWrite( V3, f );
-
-        terminal.print( "\n\rh t f: " );
-        terminal.print( h );
-        terminal.print( " " );
-        terminal.print( t );
-        terminal.print( " " );
-        terminal.print( f );
-        terminal.flush();
-
-        Serial.print( "\n\rHumidity: " );
-        Serial.print( h );
-        Serial.print( "%" );
-        Serial.print( "\n\rTemperature: " );
-        Serial.print( t );
-        Serial.print( "C \\ " );
-        Serial.print( f );
-        Serial.print( "F" );
-    }
-    else
-    {
-        Blynk.virtualWrite( V1, old_h );
-        Blynk.virtualWrite( V2, old_t );
-        Blynk.virtualWrite( V3, old_f );
-
-        terminal.print( "\n\rh t f: " );
-        terminal.print( old_h );
-        terminal.print( " " );
-        terminal.print( old_t );
-        terminal.print( " " );
-        terminal.print( old_f );
-        terminal.print( " (old)" );
-        terminal.flush();
-
-        Serial.print( "\n\rHumidity: " );
-        Serial.print( old_h );
-        Serial.print( "% (old)" );
-        Serial.print( "\n\rTemperature: " );
-        Serial.print( old_t );
-        Serial.print( "C (old) \\ " );
-        Serial.print( old_f );
-        Serial.print( "F (old)" );
-    }
-
-    if ( ppm != -1 )
-    {
-        if ( ppm > 5000 && ppm <= 10000 )
-        {
-            ppm = 5000;
-        }
-
-        if ( ppm > 10000 )
-        {
-            if ( average_ppm_index == 0 )
-            {
-                average_ppm[ average_ppm_index ] = average_ppm[ 9 ];
-                Serial.print( "\n\rC02 overflooded: taken last value" );
-            }
-            average_ppm[ average_ppm_index ] = average_ppm[ average_ppm_index - 1 ];
-            Serial.print( "\n\rC02 overflooded: taken last value" );
-        }
-        else
-        {
-            average_ppm[ average_ppm_index ] = ppm;
-        }
-        average_ppm_index++;
-
-        if ( average_ppm_index > 9 )
-        {
-            average_ppm_index = 0;
-        }
-
-        int i;
-
-        // FIXME: need another average formula
-        // for(i = 0, average_ppm_sum = 0; average_ppm[i] != 0; i++){
-        //   average_ppm_sum+=average_ppm[i];
-        //  } 
-        // if (i){
-        //   average_ppm_sum = average_ppm_sum / i;
-        //  }
-
-        average_ppm_sum = 0;
-        for ( i = 0; i < 10; i++ )
-        {
-            average_ppm_sum = average_ppm_sum + average_ppm[ i ];
-        }
-        average_ppm_sum = average_ppm_sum / 10;
-
-        Blynk.virtualWrite( V4, average_ppm_sum );
-
-        terminal.print( "\n\rC02 (aver): " );
-        terminal.print( ppm );
-        terminal.print( " (" );
-        terminal.print( average_ppm_sum );
-        terminal.print( ") ppm" );
-        terminal.flush();
-
-        Serial.print( "\n\rC02: " );
-        Serial.print( ppm );
-        Serial.print( " ppm" );
-        Serial.print( "\n\rC02 average: " );
-        Serial.print( average_ppm_sum );
-        Serial.print( " ppm" );
-    }
-    else
-    {
-
-        Serial.print( "\n\rC02: " );
-        Serial.print( "\n\rC02 average: " );
-        Serial.print( average_ppm_sum );
-        Serial.print( " ppm" );
-        terminal.print( "\n\rC02 (aver): " );
-        terminal.print( " - " );
-        terminal.print( " (" );
-        terminal.print( average_ppm_sum );
-        terminal.print( ") ppm" );
-        terminal.flush();
-    }
-
-    Serial.print( "\r\nADC: " );
-    Serial.print( adcvalue );
 
     Serial.print( "\n\rUpTime: " );
     Serial.print( days );
@@ -1167,14 +895,12 @@ void sendResults()
     Serial.print( seconds );
     Serial.print( " seconds." );
 
-    Serial.print( "\r\nTime: " );
+    Serial.print( "\n\rTime: " );
     Serial.print( currentTime );
     Serial.print( " " );
     Serial.print( currentDate );
 
-    terminal.print( "\r\nADC: " );
-    terminal.print( adcvalue );
-    terminal.print( "\n\rUpTime: " );
+    terminal.print( "\n\n\rUpTime: " );
     terminal.print( days );
     terminal.print( "d, " );
     terminal.print( hours );
@@ -1183,19 +909,94 @@ void sendResults()
     terminal.print( "m, " );
     terminal.print( seconds );
     terminal.print( "s" );
+    
+    if ( DHTreadOK )
+    {
+        Blynk.virtualWrite( V1, h );
+        Blynk.virtualWrite( V2, t );
+        Blynk.virtualWrite( V3, f );
 
-    terminal.print( "\r\nTime: " );
-    terminal.print( currentTime );
-    terminal.print( " " );
-    terminal.print( currentDate );
-    terminal.print( "\r\nSW: " );
-    terminal.print( SW_VERSION );
+        terminal.print( "\n\rHumidity: " );
+        terminal.print( h );
+        terminal.print( "%" );
+        terminal.print( "\n\rTemperature: " );
+        terminal.print( t );
+        terminal.print( " C" );
+        terminal.print( "\n\rFeels like: " );
+        terminal.print( hi );
+        terminal.print( " C" );
 
-    terminal.print( "\r\nideSize: " );
-    terminal.print( ideSize );
-    terminal.print( "\r\nrealSize " );
-    terminal.print( realSize );
+        Serial.print( "\n\rHumidity: " );
+        Serial.print( h );
+        Serial.print( "%" );
+        Serial.print( "\n\rTemperature: " );
+        Serial.print( t );
+        Serial.print( " C \\ " );
+        Serial.print( f );
+        Serial.print( " F" );
+    }
+    else
+    {
+        Blynk.virtualWrite( V1, old_h );
+        Blynk.virtualWrite( V2, old_t );
+        Blynk.virtualWrite( V3, old_f );
+
+        terminal.print( "\n\rHumidity: " );
+        terminal.print( old_h );
+        terminal.print( "% (old)" );
+        terminal.print( "\n\rTemperature: " );
+        terminal.print( old_t );
+        terminal.print( "C (old)" );
+
+        Serial.print( "\n\rHumidity: " );
+        Serial.print( old_h );
+        Serial.print( "% (old)" );
+        Serial.print( "\n\rTemperature: " );
+        Serial.print( old_t );
+        Serial.print( "C (old) / " );
+        Serial.print( old_f );
+        Serial.print( "F (old)" );
+    }
+
+    if ( ppm != -1 )
+    {
+        Blynk.virtualWrite( V4, average_ppm_sum );
+        Blynk.virtualWrite( V6, average_ppm_diff );
+
+        /* We should compare with previous sent value */
+        average_ppm_prev = average_ppm_sum;
+
+        terminal.print( "\n\rC02 average: " );
+        terminal.print( average_ppm_sum );
+        terminal.print( " ppm" );
+        terminal.print( " (diff: " );
+        terminal.print( average_ppm_diff );
+        terminal.print( " ppm)" );
+
+        Serial.print( "\n\rC02: " );
+        Serial.print( ppm );
+        Serial.print( " ppm" );
+        Serial.print( "\n\rC02 average: " );
+        Serial.print( average_ppm_sum );
+        Serial.print( " ppm" );
+    }
+    else
+    {
+        Serial.print( "\n\rC02: " );
+        Serial.print( "\n\rC02 average: " );
+        Serial.print( average_ppm_sum );
+        Serial.print( " ppm" );
+        terminal.print( "\n\rC02 (aver): " );
+        terminal.print( " - " );
+        terminal.print( " (" );
+        terminal.print( average_ppm_sum );
+        terminal.print( ") ppm" );
+    }
+
     terminal.flush();
+
+    Serial.print( "\n\rADC: " );
+    Serial.print( adcvalue );
 
     Serial.println( "\n\r===================================================" );
 }
@@ -1209,7 +1010,6 @@ void loop()
 
         if ( blynk_token[ 0 ] != '\0' )
         {
-
             if ( Blynk.connected() && _blynkWifiClient.connected() )
             {
                 Blynk.run();
@@ -1252,33 +1052,13 @@ void loop()
     buttonS1State = digitalRead( buttonS1Pin );
     buttonS2State = digitalRead( buttonS2Pin );
 
-    if ( buttonS1State == 0 )
+    if ( buttonS2State == 0 )
     {
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
-
-        delay( 50 );
-        tones( 13, 1000, 150 );
-        delay( 50 );
-        tones( 13, 1000, 150 );
-        delay( 50 );
-        tones( 13, 1000, 150 );
-
-        delay( 50 );
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
-        delay( 50 );
-        tones( 13, 1000, 50 );
+        restartMcu();
     }
 
     while ( Serial.available() > 0 )
     {
-        //Serial.println(Serial.read());  
-
         if ( Serial.read() == '\r' || Serial.read() == '\n' )
         {
             SayHello();
