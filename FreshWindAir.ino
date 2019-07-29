@@ -20,8 +20,8 @@
 #include <BlynkSimpleEsp8266.h>
 
 //RTC Time
-#include <TimeLib.h>
-#include <WidgetRTC.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 // https://github.com/plerup/espsoftwareserial
 #include <SoftwareSerial.h>
@@ -42,17 +42,27 @@
  *        Definitions
  * ------------------------- */ 
 
-#define SW_VERSION      "0.0.1"
+#define SW_VERSION          "0.1.1"
 
-#define BLYNK_GREEN     "#23C48E"
-#define BLYNK_BLUE      "#04C0F8"
-#define BLYNK_YELLOW    "#ED9D00"
-#define BLYNK_RED       "#D3435C"
-#define BLYNK_DARK_BLUE "#5F7CD8"
+#define BLYNK_GREEN         "#23C48E"
+#define BLYNK_BLUE          "#04C0F8"
+#define BLYNK_YELLOW        "#ED9D00"
+#define BLYNK_RED           "#D3435C"
+#define BLYNK_DARK_BLUE     "#5F7CD8"
 
-#define DHTPIN 12
-#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
+/* PIN definitions */
+#define DHTPIN              (12)
+#define DHTTYPE             (DHT22)   // DHT 22  (AM2302), AM2321
 
+#define LED_R_PIN           (15)
+#define LED_G_PIN           (14)
+#define LED_Y_PIN           (16)
+#define ADC_PIN             (A0)
+#define BUTTON_S1_PIN       (10)
+#define BUTTON_S2_PIN       (0)
+#define RELAY_PIN           (15)
+
+/* Sketch parameters */
 #define FILTER_POINTS       (4)
 #define CO2_WARNING_SET     (1000)
 #define CO2_WARNING_RESET   (700)
@@ -64,6 +74,12 @@
 #define TIMER_READ_ADC      (60000L)
 #define TIMER_SEND_RESULTS  (10000L)
 
+#define LED_BRIGHT          (300)
+#define LED_DIMMED          (20)
+
+#define CO2_LEVEL_AVERAGE   (700)
+#define CO2_LEVEL_POOR      (1200)
+
 /* -------------------------
  *      Code starts here
  * ------------------------- */ 
@@ -72,8 +88,10 @@ DHT dht(DHTPIN, DHTTYPE);
 Ticker ticker;
 SoftwareSerial co2Serial(5, 4, false, 256);
 BlynkTimer timer;
-WidgetRTC rtc;
 MHZ19 mhz19;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient( ntpUDP, 10800 );  // +3 hours time offset
 
 typedef enum 
 {
@@ -83,30 +101,14 @@ typedef enum
     Led_Red      = 1 << 2,
 } LedColors;
 
-bool connectBlynk()
-{
-    _blynkWifiClient.stop();
-    return _blynkWifiClient.connect( BLYNK_DEFAULT_DOMAIN, BLYNK_DEFAULT_PORT );
-}
+char Hostname[ 32 ] = "FreshWindAir";
 
-// PIN init
-int ledRPin = 15;
-int ledGPin = 14;
-int ledYPin = 16;
-int adcPin = A0;
-int buttonS1Pin = 10;
-int buttonS2Pin = 0;
-//int relayPin = 15;
+char blynk_token[ 34 ];
+char blynk_server[ 40 ];
+char blynk_port[ 6 ];
 
-// Variables
-int buttonS1State = 1;
-int buttonS2State = 1;
+int ledXState = LED_BRIGHT;
 
-int ledXState = 400;
-
-float old_h = 0;
-float old_t = 0;
-float old_f = 0;
 float h = 0;
 float t = 0;
 float f = 0;
@@ -117,44 +119,28 @@ int average_ppm_sum;
 int average_ppm_prev;
 int average_ppm_diff;
 
+int adcvalue;
+
+int ppm;
+
 int co2_limit = 5; //allowed value of CO2 limit 2, 5 (2k, 5k). 5k default
 bool co2_limit_flag = false;
 
 float temp_correction = 3; // default enabled for internal DHT sensor. -3C -1F
-
-char blynk_token[ 34 ];
-char blynk_server[ 40 ];
-char blynk_port[ 6 ];
-
-char Hostname[ 32 ] = "FreshWindAir";
-
-int ppm;
-int uptime;
-
-bool DHTreadOK = false; //false if not read
 
 bool notify_flag = false; //send notify to user if true
 bool notify_flag_beep = false; //beep works if true
 int notify_timer_start; //not allow to send notification too often.
 int notify_timer_max = 600; //interval of notify 10 min by default
 
-bool wifilost_flag = false;
-int wifilost_timer_start;
-int wifilost_timer_max = 60; // 60 sec timeout for reset if WiFi connection lost
-
 bool shouldSaveConfig = false; //flag for saving data
-int days, hours, minutes, seconds;
-
-int adcvalue;
-
 bool online = true;
 
-String currentTime;
-String currentDate;
-
-// Check flash size
-String realSize;
-String ideSize;
+static bool connectBlynk()
+{
+    _blynkWifiClient.stop();
+    return _blynkWifiClient.connect( BLYNK_DEFAULT_DOMAIN, BLYNK_DEFAULT_PORT );
+}
 
 BLYNK_CONNECTED()
 {
@@ -168,7 +154,6 @@ BLYNK_CONNECTED()
     Blynk.syncVirtual( V108 );
     Blynk.syncVirtual( V109 );
     Blynk.syncVirtual( V110 );
-    rtc.begin();
 }
 
 WidgetLED led1( V10 );
@@ -177,22 +162,26 @@ WidgetTerminal terminal( V100 );
 
 static void setLeds( int colors )
 {
-    analogWrite( ledGPin, 0 );
-    analogWrite( ledYPin, 0 );
-    analogWrite( ledRPin, 0 );
+    int newGreenState = 0;
+    int newYellowState = 0;
+    int newRedState = 0;
 
     if ( colors & Led_Green ) 
     {
-        analogWrite( ledGPin, ledXState );
+        newGreenState = ledXState;
     }
     if ( colors & Led_Yellow ) 
     {
-        analogWrite( ledYPin, ledXState );
+        newYellowState = ledXState;
     }
     if ( colors & Led_Red )
     {
-        analogWrite( ledRPin, ledXState );
+        newRedState = ledXState;
     }
+    
+    analogWrite( LED_G_PIN, newGreenState );
+    analogWrite( LED_Y_PIN, newYellowState );
+    analogWrite( LED_R_PIN, newRedState );
 }
 
 static void restartMcu()
@@ -277,31 +266,6 @@ BLYNK_WRITE( V105 )
     }
 }
 
-BLYNK_WRITE( V106 )
-{
-    co2_limit = param.asInt();
-
-    if ( co2_limit != 2 && co2_limit != 5 )
-    {
-        co2_limit = 5;
-        Serial.print( "\r\nC02 limit: 5000 ppm (default value)" );
-        terminal.print( "\r\nC02 limit: 5000 ppm (default value)" );
-        terminal.flush();
-        //co2_limit_flag = true;
-    }
-    else
-    {
-        Serial.print( "\r\nC02 limit: " );
-        Serial.print( co2_limit * 1000 );
-        Serial.print( " ppm" );
-        terminal.print( "\r\nC02 limit: " );
-        terminal.print( co2_limit * 1000 );
-        terminal.print( " ppm" );
-        terminal.flush();
-        //co2_limit_flag = true;
-    }
-}
-
 BLYNK_WRITE( V107 )
 {
     float v107 = param.asInt();
@@ -335,27 +299,27 @@ BLYNK_WRITE( V110 )
 void tick()
 {
     //toggle state
-    int state = digitalRead( ledRPin );  // get the current state of Pin
-    digitalWrite( ledRPin, !state );     // set Pin to the opposite state
+    int state = digitalRead( LED_R_PIN );  // get the current state of Pin
+    digitalWrite( LED_R_PIN, !state );     // set Pin to the opposite state
 }
 
 // toggle LED state. for future use
 void led_toggle_r()
 {
-    int state = digitalRead( ledRPin );  // get the current state of Pin
-    digitalWrite( ledRPin, !state );     // set Pin to the opposite state
+    int state = digitalRead( LED_R_PIN );  // get the current state of Pin
+    digitalWrite( LED_R_PIN, !state );     // set Pin to the opposite state
 }
 
 void led_toggle_g()
 {
-    int state = digitalRead( ledGPin );  // get the current state of Pin
-    digitalWrite( ledGPin, !state );     // set Pin to the opposite state
+    int state = digitalRead( LED_G_PIN );  // get the current state of Pin
+    digitalWrite( LED_G_PIN, !state );     // set Pin to the opposite state
 }
 
 void led_toggle_y()
 {
-    int state = digitalRead( ledYPin );  // get the current state of Pin
-    digitalWrite( ledYPin, !state );     // set Pin to the opposite state
+    int state = digitalRead( LED_Y_PIN );  // get the current state of Pin
+    digitalWrite( LED_Y_PIN, !state );     // set Pin to the opposite state
 }
 
 /* -------------------------
@@ -449,6 +413,9 @@ void readMHZ19()
         led2.setColor( BLYNK_YELLOW );
         Serial.print( " failed" );
 
+        terminal.print( "\n\r[Error] Can't read CO2!" );
+        terminal.flush();
+
         return;
     }
     else
@@ -471,7 +438,7 @@ void readMHZ19()
     }
 
     /* Set led indication */
-    if ( average_ppm_sum <= 700 )
+    if ( average_ppm_sum < CO2_LEVEL_AVERAGE )
     {
         setLeds( Led_Green );
 
@@ -480,7 +447,7 @@ void readMHZ19()
         led2.on();
         led2.setColor( BLYNK_GREEN );
     }
-    else if ( average_ppm_sum <= 1200)
+    else if ( average_ppm_sum < CO2_LEVEL_POOR )
     {
         setLeds( Led_Yellow );
 
@@ -502,7 +469,7 @@ void readMHZ19()
 
 void readDHT22()
 {
-    DHTreadOK = false;
+    bool DHTreadOK = false;
     int i = 0;
     Serial.print( "\n\rReading DHT22 sensor:" );
     while ( i < 5 && !DHTreadOK )
@@ -515,46 +482,15 @@ void readDHT22()
 
         if ( isnan( h ) || isnan( t ) || isnan( f ) )
         {
-            Serial.print( "." );
+            Serial.print( "!" );
             i++;
         }
         else
         {
             DHTreadOK = true;
-            if ( temp_correction )
-            {
-                if ( !isnan( h ) )
-                {
-                    h = h;
-                    old_h = h;
-                }
-                if ( !isnan( t ) )
-                {
-                    t = t - temp_correction; //temp_correction;
-                    old_t = t;
-                }
-                if ( !isnan( f ) )
-                {
-                    f = f - 1;
-                    old_f = f;
-                }
-            }
-            else
-            {
-                if ( !isnan( h ) )
-                {
-                    old_h = h;
-                }
-                if ( !isnan( t ) )
-                {
-                    old_t = t;
-                }
-                if ( !isnan( f ) )
-                {
-                    old_f = f;
-                }
 
-            }
+            t = t - temp_correction;
+            f = f - 1;
         }
     }
     if ( DHTreadOK )
@@ -568,12 +504,15 @@ void readDHT22()
         led2.on();
         led2.setColor( BLYNK_RED );
         Serial.print( " failed" );
+
+        terminal.print( "\n\r[Error] Can't read CO2!" );
+        terminal.flush();
     }
 }
 
 void readADC()
 {
-    adcvalue = analogRead( adcPin );
+    adcvalue = analogRead( ADC_PIN );
     if ( Blynk.connected() )
     {
         Blynk.virtualWrite( V5, adcvalue );
@@ -600,11 +539,9 @@ void SayHello()
     Serial.print( "\r\nCycleCount: " ); //unsigned 32-bit
     Serial.print( ESP.getCycleCount() );
     Serial.print( "\r\nTime: " );
-    Serial.print( currentTime );
-    Serial.print( " " );
-    Serial.print( currentDate );
+    Serial.print( timeClient.getFormattedTime() );
     Serial.print( "\r\nUpTime: " );
-    Serial.print( uptime );
+    Serial.print( millis() / 1000 );
     Serial.print( "\n\r====== BLYNK-STATUS =================================" );
     Serial.print( "\n\rBlynk token: " );
     Serial.print( blynk_token );
@@ -657,6 +594,104 @@ void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
     }
 }
 
+String getFormattedUptime() 
+{
+    int seconds = millis() / 1000;
+    int minutes = seconds / 60;
+    int hours = seconds / 3600;
+    int days = seconds / 86400;
+
+    seconds = seconds - minutes * 60;
+    minutes = minutes - hours * 60;
+    hours = hours - days * 24;
+
+    String daysStr = String( days );
+    String hoursStr = hours < 10 ? "0" + String( hours ) : String( hours );
+    String minuteStr = minutes < 10 ? "0" + String( minutes ) : String( minutes );
+    String secondStr = seconds < 10 ? "0" + String( seconds ) : String( seconds );
+
+    return daysStr + "d " + hoursStr + "h " + minuteStr + "m " + secondStr + "s";
+}
+
+void sendUptime()
+{
+    if ( Blynk.connected() )
+    {
+        Blynk.virtualWrite( V99, millis() / 1000 );
+    }
+}
+
+void sendResults()
+{
+    Serial.println( "\n\r===================================================" );
+
+    Serial.print( "\n\rUpTime: " );
+    Serial.print( getFormattedUptime() );
+
+    Serial.print( "\n\rTime: " );
+    Serial.print( timeClient.getFormattedTime() );
+
+    terminal.print( "\n\n\rUpTime: " );
+    terminal.print( getFormattedUptime() );
+    
+    /* DHT info */
+    Blynk.virtualWrite( V1, h );
+    Blynk.virtualWrite( V2, t );
+    Blynk.virtualWrite( V3, f );
+    Blynk.virtualWrite( V7, hi );
+
+    terminal.print( "\n\rHumidity: " );
+    terminal.print( h );
+    terminal.print( "%" );
+    terminal.print( "\n\rTemperature: " );
+    terminal.print( t );
+    terminal.print( " C" );
+    terminal.print( "\n\rFeels like: " );
+    terminal.print( hi );
+    terminal.print( " C" );
+
+    Serial.print( "\n\rHumidity: " );
+    Serial.print( h );
+    Serial.print( "%" );
+    Serial.print( "\n\rTemperature: " );
+    Serial.print( t );
+    Serial.print( " C \\ " );
+    Serial.print( f );
+    Serial.print( " F" );
+    Serial.print( "\n\rFeels like: " );
+    Serial.print( hi );
+    Serial.print( " C" );
+
+    /* MHZ-19 info */
+    Blynk.virtualWrite( V4, average_ppm_sum );
+    Blynk.virtualWrite( V6, average_ppm_diff );
+
+    /* We should compare with previous sent value */
+    average_ppm_prev = average_ppm_sum;
+
+    terminal.print( "\n\rC02 average: " );
+    terminal.print( average_ppm_sum );
+    terminal.print( " ppm" );
+    terminal.print( " (diff: " );
+    terminal.print( average_ppm_diff );
+    terminal.print( " ppm)" );
+
+    Serial.print( "\n\rC02: " );
+    Serial.print( ppm );
+    Serial.print( " ppm" );
+    Serial.print( "\n\rC02 average: " );
+    Serial.print( average_ppm_sum );
+    Serial.print( " ppm" );
+
+    /* ADC info */
+    Serial.print( "\n\rADC: " );
+    Serial.print( adcvalue );
+
+    terminal.flush();
+
+    Serial.println( "\n\r===================================================" );
+}
+
 // Setup
 void setup()
 {
@@ -665,18 +700,19 @@ void setup()
 
     co2Serial.begin( 9600 );
     mhz19.begin( co2Serial );
+    mhz19.recoveryReset();
     mhz19.autoCalibration();
     delay( 2000 );
 
     dht.begin();
 
-    pinMode( buttonS1Pin, INPUT );
-    pinMode( buttonS2Pin, INPUT );
-    //pinMode(relayPin, OUTPUT);
-    pinMode( adcPin, INPUT );
-    pinMode( ledRPin, OUTPUT );
-    pinMode( ledGPin, OUTPUT );
-    pinMode( ledYPin, OUTPUT );
+    pinMode( BUTTON_S1_PIN, INPUT );
+    pinMode( BUTTON_S2_PIN, INPUT );
+    //pinMode( RELAY_PIN, OUTPUT );
+    pinMode( ADC_PIN, INPUT );
+    pinMode( LED_R_PIN, OUTPUT );
+    pinMode( LED_G_PIN, OUTPUT );
+    pinMode( LED_Y_PIN, OUTPUT );
 
     delay( 2000 );
 
@@ -685,18 +721,21 @@ void setup()
     // start ticker with 0.5 because we start in AP mode and try to connect
     ticker.attach( 0.6, led_toggle_r ); //tick
 
-    // Check flash size
-    realSize = String( ESP.getFlashChipRealSize() );
-    ideSize = String( ESP.getFlashChipSize() );
-    bool flashCorrectlyConfigured = realSize.equals( ideSize );
-
-    if ( flashCorrectlyConfigured )
+    // Check flash size   
+    if ( ESP.getFlashChipRealSize() == ESP.getFlashChipSize() )
     {
-        Serial.println( "flash correctly configured, SPIFFS starts, IDE size: " + ideSize + ", match real size: " + realSize );
+        Serial.print( "flash correctly configured, SPIFFS starts, IDE size: " );
+        Serial.print( ESP.getFlashChipSize() );
+        Serial.print( ", match real size: " );
+        Serial.println( ESP.getFlashChipRealSize() );
+        Serial.println();
     }
     else
     {
-        Serial.println( "flash incorrectly configured, SPIFFS cannot start, IDE size: " + ideSize + ", real size: " + realSize );
+        Serial.print( "flash incorrectly configured, SPIFFS cannot start, IDE size: " );
+        Serial.print( ESP.getFlashChipSize() );
+        Serial.print( ", real size: " );
+        Serial.println( ESP.getFlashChipRealSize() );
     }
 
     //read configuration from FS json
@@ -752,8 +791,7 @@ void setup()
     WiFiManager wifiManager;
 
     // WiFi credentials will be reseted if button S1 will be pressed during boot
-    buttonS1State = digitalRead( buttonS1Pin );
-
+    int buttonS1State = digitalRead( BUTTON_S1_PIN );
     if ( buttonS1State == 0 )
     {
         Serial.println( "Reset Wi-Fi settings" );
@@ -837,7 +875,6 @@ void setup()
             connectBlynk();
             Blynk.config( blynk_token );
             Blynk.connect();
-            setSyncInterval( 10 * 60 ); // interval of RTC sync
             Serial.print( "\n\rblynk token: " );
             Serial.print( blynk_token );
         }
@@ -847,6 +884,9 @@ void setup()
         }
 
         Serial.print( "\n\rFreshWindAir is ready!" );
+
+        Serial.print( "\n\rStart time sync client\n\r" );
+        timeClient.begin();
     }
 
     timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
@@ -861,151 +901,17 @@ void setup()
     ESP.wdtDisable();
 }
 
-void sendUptime()
-{
-    uptime = millis() / 1000;
-
-    seconds = millis() / 1000;
-    minutes = seconds / 60;
-    hours = seconds / 3600;
-    days = seconds / 86400;
-    seconds = seconds - minutes * 60;
-    minutes = minutes - hours * 60;
-    hours = hours - days * 24;
-
-    if ( Blynk.connected() )
-    {
-        Blynk.virtualWrite( V99, uptime );
-        currentTime = String( hour() ) + ":" + minute() + ":" + second();
-        currentDate = String( day() ) + "/" + month() + "/" + year();
-    }
-}
-
-void sendResults()
-{
-    Serial.println( "\n\r===================================================" );
-
-    Serial.print( "\n\rUpTime: " );
-    Serial.print( days );
-    Serial.print( " days, " );
-    Serial.print( hours );
-    Serial.print( " hours, " );
-    Serial.print( minutes );
-    Serial.print( " minutes, " );
-    Serial.print( seconds );
-    Serial.print( " seconds." );
-
-    Serial.print( "\n\rTime: " );
-    Serial.print( currentTime );
-    Serial.print( " " );
-    Serial.print( currentDate );
-
-    terminal.print( "\n\n\rUpTime: " );
-    terminal.print( days );
-    terminal.print( "d, " );
-    terminal.print( hours );
-    terminal.print( "h, " );
-    terminal.print( minutes );
-    terminal.print( "m, " );
-    terminal.print( seconds );
-    terminal.print( "s" );
-    
-    if ( DHTreadOK )
-    {
-        Blynk.virtualWrite( V1, h );
-        Blynk.virtualWrite( V2, t );
-        Blynk.virtualWrite( V3, f );
-
-        terminal.print( "\n\rHumidity: " );
-        terminal.print( h );
-        terminal.print( "%" );
-        terminal.print( "\n\rTemperature: " );
-        terminal.print( t );
-        terminal.print( " C" );
-        terminal.print( "\n\rFeels like: " );
-        terminal.print( hi );
-        terminal.print( " C" );
-
-        Serial.print( "\n\rHumidity: " );
-        Serial.print( h );
-        Serial.print( "%" );
-        Serial.print( "\n\rTemperature: " );
-        Serial.print( t );
-        Serial.print( " C \\ " );
-        Serial.print( f );
-        Serial.print( " F" );
-    }
-    else
-    {
-        Blynk.virtualWrite( V1, old_h );
-        Blynk.virtualWrite( V2, old_t );
-        Blynk.virtualWrite( V3, old_f );
-
-        terminal.print( "\n\rHumidity: " );
-        terminal.print( old_h );
-        terminal.print( "% (old)" );
-        terminal.print( "\n\rTemperature: " );
-        terminal.print( old_t );
-        terminal.print( "C (old)" );
-
-        Serial.print( "\n\rHumidity: " );
-        Serial.print( old_h );
-        Serial.print( "% (old)" );
-        Serial.print( "\n\rTemperature: " );
-        Serial.print( old_t );
-        Serial.print( "C (old) / " );
-        Serial.print( old_f );
-        Serial.print( "F (old)" );
-    }
-
-    if ( ppm != -1 )
-    {
-        Blynk.virtualWrite( V4, average_ppm_sum );
-        Blynk.virtualWrite( V6, average_ppm_diff );
-
-        /* We should compare with previous sent value */
-        average_ppm_prev = average_ppm_sum;
-
-        terminal.print( "\n\rC02 average: " );
-        terminal.print( average_ppm_sum );
-        terminal.print( " ppm" );
-        terminal.print( " (diff: " );
-        terminal.print( average_ppm_diff );
-        terminal.print( " ppm)" );
-
-        Serial.print( "\n\rC02: " );
-        Serial.print( ppm );
-        Serial.print( " ppm" );
-        Serial.print( "\n\rC02 average: " );
-        Serial.print( average_ppm_sum );
-        Serial.print( " ppm" );
-    }
-    else
-    {
-        Serial.print( "\n\rC02: " );
-        Serial.print( "\n\rC02 average: " );
-        Serial.print( average_ppm_sum );
-        Serial.print( " ppm" );
-        terminal.print( "\n\rC02 (aver): " );
-        terminal.print( " - " );
-        terminal.print( " (" );
-        terminal.print( average_ppm_sum );
-        terminal.print( ") ppm" );
-    }
-
-    terminal.flush();
-
-    Serial.print( "\n\rADC: " );
-    Serial.print( adcvalue );
-
-    Serial.println( "\n\r===================================================" );
-}
-
 // LOOP
 void loop()
 {
+    static bool wifilost_flag = false;
+    static int wifilost_timer_start;
+    static int wifilost_timer_max = 60; // 60 sec timeout for reset if WiFi connection lost
+  
     if ( WiFi.status() == WL_CONNECTED )
     {
+        timeClient.update();
+      
         wifilost_flag = false;
 
         if ( blynk_token[ 0 ] != '\0' )
@@ -1033,6 +939,8 @@ void loop()
 
     if ( WiFi.status() != WL_CONNECTED && online )
     {
+        int uptime = millis() / 1000;
+        
         if ( !wifilost_flag )
         {
             wifilost_timer_start = uptime;
@@ -1049,12 +957,33 @@ void loop()
     timer.run();
     ESP.wdtFeed();
 
-    buttonS1State = digitalRead( buttonS1Pin );
-    buttonS2State = digitalRead( buttonS2Pin );
+    /* Dim led indication for evening */
+    if ( timeClient.getHours() >= 22 || timeClient.getHours() <= 8 )
+    {
+        ledXState = LED_DIMMED;
+    }
+    else 
+    {
+        ledXState = LED_BRIGHT;
+    }
 
+    /* Buttons handling */
+    int buttonS1State = digitalRead( BUTTON_S1_PIN );
+    int buttonS2State = digitalRead( BUTTON_S2_PIN );
+
+    static unsigned long lastCalibrationTime = 0;
     if ( buttonS2State == 0 )
     {
-        restartMcu();
+        if ( millis() - lastCalibrationTime > 10000 )
+        {       
+            Serial.print( "\n\rMHZ-19 recalibrate zero now..." );
+            terminal.print( "\n\rMHZ-19 recalibrate zero now..." );
+            terminal.flush();
+        
+            mhz19.calibrateZero();   
+
+            lastCalibrationTime = millis();
+        }
     }
 
     while ( Serial.available() > 0 )
