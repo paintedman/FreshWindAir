@@ -42,7 +42,7 @@
  *        Definitions
  * ------------------------- */ 
 
-#define SW_VERSION          "0.1.1"
+#define SW_VERSION          "0.1.2"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -76,6 +76,7 @@
 
 #define LED_BRIGHT          (300)
 #define LED_DIMMED          (20)
+#define LED_OFF             (0)
 
 #define CO2_LEVEL_AVERAGE   (700)
 #define CO2_LEVEL_POOR      (1200)
@@ -413,7 +414,7 @@ void readMHZ19()
         led2.setColor( BLYNK_YELLOW );
         Serial.print( " failed" );
 
-        terminal.print( "\n\r[Error] Can't read CO2!" );
+        terminal.print( "\n\r\n\r[Error] Can't read CO2!\n\r" );
         terminal.flush();
 
         return;
@@ -475,12 +476,11 @@ void readDHT22()
     while ( i < 5 && !DHTreadOK )
     {
         delay( i * 75 );
-        h = dht.readHumidity();
-        t = dht.readTemperature();
-        f = dht.readTemperature( true ); // Read temperature as Fahrenheit (isFahrenheit = true)
-        hi = dht.computeHeatIndex( t, h, false );        
+        float local_h = dht.readHumidity();
+        float local_t = dht.readTemperature();
+        float local_f = dht.readTemperature( true ); // Read temperature as Fahrenheit (isFahrenheit = true)   
 
-        if ( isnan( h ) || isnan( t ) || isnan( f ) )
+        if ( isnan( local_h ) || isnan( local_t ) || isnan( local_f ) )
         {
             Serial.print( "!" );
             i++;
@@ -489,8 +489,10 @@ void readDHT22()
         {
             DHTreadOK = true;
 
-            t = t - temp_correction;
-            f = f - 1;
+            h = local_h;
+            t = local_t - temp_correction;
+            f = local_f - 1;
+            hi = dht.computeHeatIndex( t, h, false );
         }
     }
     if ( DHTreadOK )
@@ -505,7 +507,7 @@ void readDHT22()
         led2.setColor( BLYNK_RED );
         Serial.print( " failed" );
 
-        terminal.print( "\n\r[Error] Can't read CO2!" );
+        terminal.print( "\n\r\n\r[Error] Can't read DHT22!\n\r" );
         terminal.flush();
     }
 }
@@ -684,8 +686,8 @@ void sendResults()
     Serial.print( " ppm" );
 
     /* ADC info */
-    Serial.print( "\n\rADC: " );
-    Serial.print( adcvalue );
+    // Serial.print( "\n\rADC: " );
+    // Serial.print( adcvalue );
 
     terminal.flush();
 
@@ -696,13 +698,13 @@ void sendResults()
 void setup()
 {
     Serial.begin( 115200 );
-    delay( 2000 );
+    delay( 100 );
 
     co2Serial.begin( 9600 );
     mhz19.begin( co2Serial );
-    mhz19.recoveryReset();
-    mhz19.autoCalibration();
-    delay( 2000 );
+    mhz19.autoCalibration( true );
+    mhz19.setRange( 2000 );
+    delay( 100 );
 
     dht.begin();
 
@@ -713,8 +715,6 @@ void setup()
     pinMode( LED_R_PIN, OUTPUT );
     pinMode( LED_G_PIN, OUTPUT );
     pinMode( LED_Y_PIN, OUTPUT );
-
-    delay( 2000 );
 
     tones( 13, 1000, 100 );
 
@@ -893,8 +893,8 @@ void setup()
     timer.setInterval( TIMER_NOTIFY, notify );
     timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
     timer.setInterval( TIMER_READ_DHT22, readDHT22 );
-    timer.setInterval( TIMER_READ_ADC, readADC );
     timer.setInterval( TIMER_SEND_RESULTS, sendResults );
+    // timer.setInterval( TIMER_READ_ADC, readADC );
     
     // Serial.setDebugOutput( true );
 
@@ -957,10 +957,10 @@ void loop()
     timer.run();
     ESP.wdtFeed();
 
-    /* Dim led indication for evening */
+    /* Disable led indication for evening */
     if ( timeClient.getHours() >= 22 || timeClient.getHours() <= 8 )
     {
-        ledXState = LED_DIMMED;
+        ledXState = LED_OFF;
     }
     else 
     {
