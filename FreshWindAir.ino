@@ -64,8 +64,6 @@
 
 /* Sketch parameters */
 #define FILTER_POINTS       (4)
-#define CO2_WARNING_SET     (1000)
-#define CO2_WARNING_RESET   (700)
 
 #define TIMER_SEND_UPTIME   (5000L)
 #define TIMER_NOTIFY        (30000L)
@@ -77,17 +75,21 @@
 #define LED_BRIGHT          (300)
 #define LED_DIMMED          (20)
 #define LED_OFF             (0)
+#define LED_HOUR_ENABLE     (8)
+#define LED_HOUR_DISABLE    (22)
 
 #define CO2_LEVEL_AVERAGE   (700)
-#define CO2_LEVEL_POOR      (1200)
+#define CO2_LEVEL_POOR      (1100)
+
+
 
 /* -------------------------
  *      Code starts here
  * ------------------------- */ 
 
-DHT dht(DHTPIN, DHTTYPE);
+DHT dht( DHTPIN, DHTTYPE );
 Ticker ticker;
-SoftwareSerial co2Serial(5, 4, false, 256);
+SoftwareSerial co2Serial( 5, 4, false, 256 );
 BlynkTimer timer;
 MHZ19 mhz19;
 
@@ -115,26 +117,17 @@ float t = 0;
 float f = 0;
 float hi = 0;   // heat index
 
-std::vector<int> ppm_values( FILTER_POINTS, 0 );
+int ppm;
 int average_ppm_sum;
 int average_ppm_prev;
 int average_ppm_diff;
+std::vector<int> ppm_values( FILTER_POINTS, 0 );
 
 int adcvalue;
-
-int ppm;
-
-int co2_limit = 5; //allowed value of CO2 limit 2, 5 (2k, 5k). 5k default
-bool co2_limit_flag = false;
-
-float temp_correction = 3; // default enabled for internal DHT sensor. -3C -1F
-
-bool notify_flag = false; //send notify to user if true
-bool notify_flag_beep = false; //beep works if true
-int notify_timer_start; //not allow to send notification too often.
-int notify_timer_max = 600; //interval of notify 10 min by default
-
-bool shouldSaveConfig = false; //flag for saving data
+float temp_correction = 3;      // default enabled for internal DHT sensor. -3C -1F
+bool notify_flag = false;       // flag that notification sent to user
+bool notify_flag_beep = false;  // beep works if true
+bool shouldSaveConfig = false;  // flag for saving data
 bool online = true;
 
 static bool connectBlynk()
@@ -178,8 +171,7 @@ static void setLeds( int colors )
     if ( colors & Led_Red )
     {
         newRedState = ledXState;
-    }
-    
+    }    
     analogWrite( LED_G_PIN, newGreenState );
     analogWrite( LED_Y_PIN, newYellowState );
     analogWrite( LED_R_PIN, newRedState );
@@ -352,49 +344,40 @@ void saveConfigCallback()
 
 void notify()
 {
-//    if ( !notify_flag && average_ppm_max > 400 && average_ppm_sum >= average_ppm_max )
-//    {
-//        notify_flag = !notify_flag;
-//        notify_timer_start = uptime;
-//    }
-//
-//    if ( notify_flag && average_ppm_max > average_ppm_sum )
-//    {
-//        notify_flag = !notify_flag;
-//    }
-//
-//    if ( notify_flag && ( ( uptime - notify_timer_start ) > notify_timer_max ) )
-//    {
-//
-//        Blynk.notify( String( "CO2 level > " ) + average_ppm_sum + ". Please Open Window." );
-//        terminal.print( "\n\rSending notify to phone. " );
-//        terminal.print( "ppm > " );
-//        terminal.print( average_ppm_sum );
-//        terminal.flush();
-//        Serial.print( "\n\rSending notify to phone. " );
-//        Serial.print( "\n\rCO2 level > " );
-//        Serial.print( average_ppm_sum );
-//
-//        tones( 13, 1000, 50 );
-//        delay( 50 );
-//        tones( 13, 1000, 50 );
-//        delay( 50 );
-//        tones( 13, 1000, 50 );
-//
-//        notify_flag = false;
-//    }
-//
-//    if ( notify_flag )
-//    {
-//        terminal.print( "\n\rNotify in: " );
-//        terminal.print( notify_timer_max + notify_timer_start - uptime );
-//        terminal.print( " seconds" );
-//        terminal.flush();
-//
-//        Serial.print( "\n\rNotify in: " );
-//        Serial.print( notify_timer_max + notify_timer_start - uptime );
-//        Serial.print( " seconds" );
-//    }
+    if ( average_ppm_sum <= CO2_LEVEL_AVERAGE )
+    {
+        if ( notify_flag )
+        {
+            terminal.print( "\n\rCO2 returns back to secure level" );
+            terminal.flush();
+
+            Serial.print( "\n\rCO2 returns back to secure level" );
+        }
+        notify_flag = false;
+    }
+    else if ( !notify_flag && average_ppm_sum >= CO2_LEVEL_POOR )
+    {
+        Blynk.notify( String( "CO2 level > " ) + CO2_LEVEL_POOR + ". Please Open Window." );
+
+        terminal.print( "\n\rSending notify to phone. " );
+        terminal.print( "ppm > " );
+        terminal.print( CO2_LEVEL_POOR );
+        terminal.flush();
+
+        Serial.print( "\n\rSending notify to phone. " );
+        Serial.print( "\n\rCO2 level > " );
+        Serial.print( CO2_LEVEL_POOR );
+
+        if ( notify_flag_beep )
+        {
+            tones( 13, 1000, 50 );
+            delay( 50 );
+            tones( 13, 1000, 50 );
+            delay( 50 );
+            tones( 13, 1000, 50 );
+        }
+        notify_flag = true;
+    }
 }
 
 void readMHZ19()
@@ -549,19 +532,8 @@ void SayHello()
     Serial.print( blynk_token );
     Serial.print( "\n\rBlynk connected: " );
     Serial.print( Blynk.connected() );
-//    if ( average_ppm_max == 400 )
-//    {
-//        Serial.print( "\r\nNotify level: disabled" );
-//    }
-//    else
-//    {
-//        Serial.print( "\r\nNotify level: " );
-//        Serial.print( average_ppm_max );
-//    }
     Serial.print( "\r\nBeep: " );
     Serial.print( notify_flag_beep );
-    Serial.print( "\r\nCO2 limit: " );
-    Serial.print( co2_limit * 1000 );
     Serial.print( "\r\nTemperature correction: " );
     Serial.print( temp_correction );
     Serial.print( " C" );
@@ -625,33 +597,40 @@ void sendUptime()
 
 void sendResults()
 {
-    Serial.println( "\n\r===================================================" );
-
-    Serial.print( "\n\rUpTime: " );
-    Serial.print( getFormattedUptime() );
-
-    Serial.print( "\n\rTime: " );
-    Serial.print( timeClient.getFormattedTime() );
-
-    terminal.print( "\n\n\rUpTime: " );
-    terminal.print( getFormattedUptime() );
-    
     /* DHT info */
     Blynk.virtualWrite( V1, h );
     Blynk.virtualWrite( V2, t );
     Blynk.virtualWrite( V3, f );
     Blynk.virtualWrite( V7, hi );
+    /* MHZ-19 info */
+    Blynk.virtualWrite( V4, average_ppm_sum );
+    Blynk.virtualWrite( V6, average_ppm_diff );
 
-    terminal.print( "\n\rHumidity: " );
+    terminal.print( "\n\rUpTime: " );
+    terminal.println( getFormattedUptime() );
+    terminal.print( "H, T, HI: " );
     terminal.print( h );
-    terminal.print( "%" );
-    terminal.print( "\n\rTemperature: " );
+    terminal.print( "%, " );
     terminal.print( t );
-    terminal.print( " C" );
-    terminal.print( "\n\rFeels like: " );
+    terminal.print( " C, " );
     terminal.print( hi );
-    terminal.print( " C" );
+    terminal.println( " C" );
+    terminal.print( "C02 average: " );
+    terminal.print( average_ppm_sum );
+    terminal.print( " ppm" );
+    terminal.print( " (diff: " );
+    terminal.print( average_ppm_diff );
+    terminal.println( " ppm)" );
+    terminal.flush();
 
+    /* We should compare with previous sent value */
+    average_ppm_prev = average_ppm_sum;
+
+    Serial.println( "\n\r===================================================" );
+    Serial.print( "\n\rUpTime: " );
+    Serial.print( getFormattedUptime() );
+    Serial.print( "\n\rTime: " );
+    Serial.print( timeClient.getFormattedTime() );
     Serial.print( "\n\rHumidity: " );
     Serial.print( h );
     Serial.print( "%" );
@@ -663,34 +642,12 @@ void sendResults()
     Serial.print( "\n\rFeels like: " );
     Serial.print( hi );
     Serial.print( " C" );
-
-    /* MHZ-19 info */
-    Blynk.virtualWrite( V4, average_ppm_sum );
-    Blynk.virtualWrite( V6, average_ppm_diff );
-
-    /* We should compare with previous sent value */
-    average_ppm_prev = average_ppm_sum;
-
-    terminal.print( "\n\rC02 average: " );
-    terminal.print( average_ppm_sum );
-    terminal.print( " ppm" );
-    terminal.print( " (diff: " );
-    terminal.print( average_ppm_diff );
-    terminal.print( " ppm)" );
-
     Serial.print( "\n\rC02: " );
     Serial.print( ppm );
     Serial.print( " ppm" );
     Serial.print( "\n\rC02 average: " );
     Serial.print( average_ppm_sum );
     Serial.print( " ppm" );
-
-    /* ADC info */
-    // Serial.print( "\n\rADC: " );
-    // Serial.print( adcvalue );
-
-    terminal.flush();
-
     Serial.println( "\n\r===================================================" );
 }
 
@@ -958,7 +915,7 @@ void loop()
     ESP.wdtFeed();
 
     /* Disable led indication for evening */
-    if ( timeClient.getHours() >= 22 || timeClient.getHours() <= 8 )
+    if ( timeClient.getHours() >= LED_HOUR_DISABLE || timeClient.getHours() <= LED_HOUR_ENABLE )
     {
         ledXState = LED_OFF;
     }
@@ -971,17 +928,31 @@ void loop()
     int buttonS1State = digitalRead( BUTTON_S1_PIN );
     int buttonS2State = digitalRead( BUTTON_S2_PIN );
 
+    if ( buttonS1State == 0 )
+    {
+        restartMcu();
+    }
+
     static unsigned long lastCalibrationTime = 0;
+    static bool calibrationStatus = false;
     if ( buttonS2State == 0 )
     {
         if ( millis() - lastCalibrationTime > 10000 )
-        {       
-            Serial.print( "\n\rMHZ-19 recalibrate zero now..." );
-            terminal.print( "\n\rMHZ-19 recalibrate zero now..." );
+        {         
+            mhz19.autoCalibration( calibrationStatus );
+            if ( calibrationStatus )
+            {
+                Serial.print( "\n\rSet MHZ-19 ABC on..." );
+                terminal.print( "\n\rSet MHZ-19 ABC on..." );
+            } 
+            else 
+            {
+                Serial.print( "\n\rSet MHZ-19 ABC off..." );
+                terminal.print( "\n\rSet MHZ-19 ABC off..." );
+            }
             terminal.flush();
-        
-            mhz19.calibrateZero();   
 
+            calibrationStatus = !calibrationStatus;  
             lastCalibrationTime = millis();
         }
     }
