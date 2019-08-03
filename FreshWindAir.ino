@@ -1,12 +1,8 @@
-/*  OpenWindAir Smart CO2 sensor.
- *  Based on: ESP8266, MH-Z19, AM2302, Blynk and MQTT.
- *  Created in Arduino IDE.
- *  For more details please visit http://openwind.ru
- *  Contact us: hello@openwind.ru
- */
-
 /*
  * 07.2019 dmitriev.dd@hotmail.com
+ * 
+ * This sketch based on OpenWind project available at
+ * https://github.com/zaharenkov/openwindair
  */
 
 #define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
