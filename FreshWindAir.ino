@@ -21,8 +21,9 @@
  * V99 - Uptime as integer in seconds
  */ 
 
+// Comment this out to disable prints and save space
+// #define BLYNK_PRINT Serial   
 
-#define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
 #include <FS.h>
 #include <string.h>
 #include <vector>
@@ -55,7 +56,8 @@
  * ------------------------- */ 
 
 #define ENABLE_LOGS         (0)
-#define ENABLE_DEBUG_LOGS   (1)
+#define ENABLE_BLYNK_LOGS   (0)
+#define ENABLE_DEBUG_LOGS   (0)
 
 #if ENABLE_LOGS
   #if ENABLE_DEBUG_LOGS
@@ -72,7 +74,7 @@
 #endif
 
 
-#define SW_VERSION          "0.2.0"
+#define SW_VERSION          "0.2.5"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -98,7 +100,7 @@
 #define TIMER_SEND_UPTIME   (5000L)
 #define TIMER_NOTIFY        (30000L)
 #define TIMER_READ_MHZ19    (5000L)
-#define TIMER_READ_DHT22    (20000L)
+#define TIMER_READ_DHT22    (30000L)
 #define TIMER_READ_ADC      (60000L)
 #define TIMER_SEND_RESULTS  (10000L)
 
@@ -160,7 +162,7 @@ bool shouldSaveConfig = false;  // flag for saving data
 bool online = true;
 
 // command to ask for data
-const byte MHZ19Cmd_getCO2[9] = { 0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79 };
+const byte MHZ19Cmd_getCO2[9] = { 0xFF, 0x01, 0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7A };
 const byte MHZ19Cmd_setRange2k[9] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F };
 const byte MHZ19Cmd_setAbcOff[9] = { 0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
 const byte MHZ19Cmd_setAbcOn[9] = { 0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6 };
@@ -208,6 +210,20 @@ static String getFormattedUptime()
     return daysStr + " days " + hoursStr + ":" + minuteStr + ":" + secondStr;
 }
 
+static byte getCRC( byte inBytes[], int size )
+{
+    /* as shown in datasheet */
+    byte x = 0, CRC = 0;
+
+    for ( x = 1; x < size - 1; x++ )
+    {
+        CRC += inBytes[ x ];
+    }
+    CRC = 255 - CRC;
+    CRC++;
+
+    return CRC;
+}
 
 static void setLeds( int colors )
 {
@@ -433,48 +449,59 @@ void notify()
 
 int readCO2()
 {
-    char response[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    byte response[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     co2Serial.write( MHZ19Cmd_getCO2, 9 ); 
+    co2Serial.flush();
 
-    delay(1);
+    /* Wait response */
+    delay( 1 );
 
-    while ( co2Serial.available() > 0 && ( unsigned char ) co2Serial.peek() != 0xFF )
+    while ( co2Serial.available() > 0 && ( unsigned char ) co2Serial.peek() != 0xFF ) 
     {
         co2Serial.read();
+    } 
+    int len = co2Serial.readBytes( response, 9 );
+    if ( len != 9 )
+    {
+        ERR( "Wrong resp length: %x!", len );
+        terminal.print( "Wrong resp len from MHZ-19: " );
+        terminal.println( len );
+        terminal.flush();
+        
+        return -1;
     }
-    memset( response, 0, 9 );
-    co2Serial.readBytes( response, 9 );
-
     if ( response[0] != 0xFF )
     {
-        ERR( "Wrong starting byte from co2 sensor!" );
+        ERR( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
+        terminal.println( "Wrong starting byte MHZ-19" );
+        terminal.flush();
+        
         return -1;
     }
-    if ( response[1] != 0x86 )
+    if ( response[1] != 0x85 )
     {
-        ERR( "Wrong command from co2 sensor! " );
+        ERR( "Wrong command from CO2 sensor! " );
+        terminal.println( "Wrong command MHZ-19" );
+        terminal.flush();
+        
         return -1;
     }
-    int responseHigh = (int) response[2];
-    int responseLow = (int) response[3];
-
-    return ( responseHigh << 8 ) | responseLow;
+    byte crc = getCRC( response, 9 );
+    if ( response[ 8 ] != crc )
+    {
+        ERR( "Wrong CRC from CO2 sensor!" );
+        terminal.println( "Wrong CRC MHZ-19" );
+        terminal.flush();
+        
+        return -1;
+    }
+    return ( response[ 4 ] << 8 ) | response[ 5 ];
 }
 
 void readMHZ19()
-{
-    int i = 0;
-    ppm = -1;
-    while ( i < 2 && ppm == -1 )
-    {
-        ppm = readCO2();
-        if ( ppm == -1 ) 
-        {
-            i++;
-            delay( 100 );
-        }
-    }
+{  
+    ppm = readCO2();
     if ( ppm == -1 )
     {
         mhz19_errors++;
@@ -482,8 +509,9 @@ void readMHZ19()
         led2.on();
         led2.setColor( BLYNK_YELLOW );
 
-        ERR( "Reading MHZ19 sensor failed" );        
-        terminal.print( "[Error] Reading MHZ19 sensor failed" );
+        ERR( "MHZ19 failed at %s\n", getFormattedUptime().c_str() );        
+        terminal.print( "MHZ19 failed at " );
+        terminal.println( getFormattedUptime() );
         terminal.flush();
 
         return;
@@ -513,8 +541,6 @@ void readMHZ19()
 
         led1.on();
         led1.setColor( BLYNK_GREEN );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
     }
     else if ( average_ppm_sum < CO2_LEVEL_POOR )
     {
@@ -522,8 +548,6 @@ void readMHZ19()
 
         led1.on();
         led1.setColor( BLYNK_YELLOW );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
     }
     else 
     {
@@ -531,13 +555,13 @@ void readMHZ19()
 
         led1.on();
         led1.setColor( BLYNK_RED );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
     }
 }
 
 void readDHT22()
 {
+    delay( 100 );
+    
     bool DHTreadOK = false;
     int i = 0;
     while ( i < 5 && !DHTreadOK )
@@ -658,7 +682,8 @@ void sendResults()
     /* MHZ-19 info */
     Blynk.virtualWrite( V4, average_ppm_sum );
     Blynk.virtualWrite( V6, average_ppm_diff );
-    
+
+#if ENABLE_BLYNK_LOGS
     terminal.print( "Home weather : " );
     terminal.print( h );
     terminal.print( " %, " );
@@ -668,11 +693,12 @@ void sendResults()
     terminal.println( " C" );
     terminal.print( "C02 average  : " );
     terminal.print( average_ppm_sum );
-    terminal.print( " ppm" );
-    terminal.print( " (diff: " );
+    terminal.print( " ppm " );
+    terminal.print( "(diff: " );
     terminal.print( average_ppm_diff );
     terminal.println( " ppm)" );
     terminal.flush();
+#endif
 
     /* We should compare with previous sent value */
     average_ppm_prev = average_ppm_sum;
@@ -687,6 +713,17 @@ void sendResults()
     DBG( "C02 average: %d ppm", average_ppm_sum );
     DBG( "===================================================" );
 }
+
+//void testTimer() 
+//{
+//    readMHZ19();
+//    readDHT22();
+//
+//    notify();
+//
+//    sendUptime();
+//    sendResults();
+//}
 
 // Setup
 void setup()
@@ -872,12 +909,14 @@ void setup()
         timeClient.begin();
     }
 
-    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
-    timer.setInterval( TIMER_NOTIFY, notify );
     timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
     timer.setInterval( TIMER_READ_DHT22, readDHT22 );
+    timer.setInterval( TIMER_NOTIFY, notify );
+    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
     timer.setInterval( TIMER_SEND_RESULTS, sendResults );
     // timer.setInterval( TIMER_READ_ADC, readADC );
+
+    // timer.setInterval( 10000, testTimer );
     
     // Serial.setDebugOutput( true );
 
@@ -954,23 +993,14 @@ void loop()
     int buttonS1State = digitalRead( BUTTON_S1_PIN );
     int buttonS2State = digitalRead( BUTTON_S2_PIN );
 
-    // static unsigned long lastRecoveryResetTime = 0;
-    // if ( buttonS1State == 0 )
-    // {
-    //     if ( millis() - lastRecoveryResetTime > 5000 )
-    //     {         
-    //         terminal.print( "Make MHZ-19 recovery reset" );
-    //         terminal.flush();
-            
-    //         // mhz19.recoveryReset();
-
-    //         lastRecoveryResetTime = millis();
-    //     }
-    // }
+    if ( buttonS2State == 0 )
+    {
+        restartMcu();
+    }
 
     static unsigned long lastCalibrationTime = 0;
     static bool calibrationStatus = false;
-    if ( buttonS2State == 0 )
+    if ( buttonS1State == 0 )
     {
         if ( millis() - lastCalibrationTime > 5000 )
         {         
