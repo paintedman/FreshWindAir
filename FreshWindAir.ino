@@ -5,10 +5,27 @@
  * https://github.com/zaharenkov/openwindair
  */
 
-#define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
+/*
+ * Blynk values:
+ * 
+ * V1 - Humidity
+ * V2 - Temperature in C
+ * V3 - Temperature in F
+ * V4 - Average CO2 ppm
+ * V5 - ADC value
+ * V6 - Difference of current average CO2 and previous
+ * V7 - Humidity index
+ * V8 - Uptime as string 
+ * V97 - MHZ19 errors count
+ * V98 - DHT22 errors count
+ * V99 - Uptime as integer in seconds
+ */ 
+
+// Comment this out to disable prints and save space
+// #define BLYNK_PRINT Serial   
+
 #include <FS.h>
 #include <string.h>
-#include <MHZ19.h>
 #include <vector>
 
 //blynk
@@ -38,16 +55,25 @@
  *        Definitions
  * ------------------------- */ 
 
-#if 0
-#define DBG( fmt, args... ) Serial.printf( "[DBG] " fmt "\n", ##args )
+#define ENABLE_LOGS         (0)
+#define ENABLE_BLYNK_LOGS   (0)
+#define ENABLE_DEBUG_LOGS   (0)
+
+#if ENABLE_LOGS
+  #if ENABLE_DEBUG_LOGS
+    #define DBG( fmt, args... ) Serial.printf( "[%lu][DBG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+  #else
+    #define DBG( fmt, args... )
+  #endif
+  #define ERR( fmt, args... ) Serial.printf( "[%lu][ERR][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+  #define MSG( fmt, args... ) Serial.printf( "[%lu][MSG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
 #else
-#define DBG( fmt, args... )
+  #define DBG( fmt, args... )
+  #define ERR( fmt, args... )
+  #define MSG( fmt, args... )
 #endif
 
-#define ERR( fmt, args... ) Serial.printf( "[ERR] " fmt "\n", ##args )
-#define MSG( fmt, args... ) Serial.printf( "[MSG] " fmt "\n", ##args )
-
-#define SW_VERSION          "0.2.0"
+#define SW_VERSION          "0.3.0"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -68,14 +94,15 @@
 #define RELAY_PIN           (15)
 
 /* Sketch parameters */
-#define FILTER_POINTS       (4)
+#define FILTER_POINTS       (6)
 
-#define TIMER_SEND_UPTIME   (5000L)
-#define TIMER_NOTIFY        (30000L)
-#define TIMER_READ_MHZ19    (5000L)
+#define TIMER_READ_MHZ19    (10000L)
 #define TIMER_READ_DHT22    (20000L)
+#define TIMER_NOTIFY        (20000L)
+#define TIMER_SEND_RESULTS  (20000L)
+#define TIMER_SEND_UPTIME   (5000L)
 #define TIMER_READ_ADC      (60000L)
-#define TIMER_SEND_RESULTS  (10000L)
+#define TIMER_CLEAR_ERRORS  (86400000L)
 
 #define LED_BRIGHT          (300)
 #define LED_DIMMED          (20)
@@ -94,8 +121,6 @@ DHT dht( DHTPIN, DHTTYPE );
 Ticker ticker;
 SoftwareSerial co2Serial( 5, 4, false, 256 );
 BlynkTimer timer;
-MHZ19 mhz19;
-
 WiFiUDP ntpUDP;
 NTPClient timeClient( ntpUDP, 10800 );  // +3 hours time offset
 
@@ -135,6 +160,12 @@ bool notify_flag = false;       // flag that notification sent to user
 bool notify_flag_beep = false;  // beep works if true
 bool shouldSaveConfig = false;  // flag for saving data
 bool online = true;
+
+// command to ask for data
+const byte MHZ19Cmd_getCO2[9] = { 0xFF, 0x01, 0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7A };
+const byte MHZ19Cmd_setRange2k[9] = { 0xFF, 0x01, 0x99, 0x00, 0x00, 0x00, 0x07, 0xD0, 0x8F };
+const byte MHZ19Cmd_setAbcOff[9] = { 0xFF, 0x01, 0x79, 0x00, 0x00, 0x00, 0x00, 0x00, 0x86 };
+const byte MHZ19Cmd_setAbcOn[9] = { 0xFF, 0x01, 0x79, 0xA0, 0x00, 0x00, 0x00, 0x00, 0xE6 };
 
 static bool connectBlynk()
 {
@@ -179,6 +210,20 @@ static String getFormattedUptime()
     return daysStr + " days " + hoursStr + ":" + minuteStr + ":" + secondStr;
 }
 
+static byte getCRC( byte inBytes[], int size )
+{
+    /* as shown in datasheet */
+    byte x = 0, CRC = 0;
+
+    for ( x = 1; x < size - 1; x++ )
+    {
+        CRC += inBytes[ x ];
+    }
+    CRC = 255 - CRC;
+    CRC++;
+
+    return CRC;
+}
 
 static void setLeds( int colors )
 {
@@ -209,7 +254,7 @@ static void restartMcu()
     terminal.flush();
     MSG( "Restart in 3..2..1.." );
 
-    setLeds( ( LedColors_t ) Led_Green | Led_Yellow | Led_Red );
+    setLeds( Led_Green | Led_Yellow | Led_Red );
     
     ESP.restart();
 }
@@ -369,6 +414,8 @@ void saveConfigCallback()
 
 void notify()
 {
+    DBG( "Start" );
+  
     if ( average_ppm_sum <= CO2_LEVEL_AVERAGE )
     {
         if ( notify_flag )
@@ -384,8 +431,7 @@ void notify()
     {
         Blynk.notify( String( "CO2 level > " ) + CO2_LEVEL_POOR + ". Please Open Window." );
 
-        terminal.print( "Sending notify to phone. " );
-        terminal.print( "ppm > " );
+        terminal.print( "Sending notify to phone. ppm > " );
         terminal.println( CO2_LEVEL_POOR );
         terminal.flush();
 
@@ -401,97 +447,146 @@ void notify()
         }
         notify_flag = true;
     }
+
+    DBG( "End" );    
+}
+
+int readCO2()
+{
+    byte response[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+    /* Clear RX buffer before sending command */
+    DBG( "data available before command: %d", co2Serial.available() );
+    while ( co2Serial.available() > 0 ) 
+    {
+        DBG( "remove 0x%02x byte from buffer", co2Serial.peek() );
+        co2Serial.read();
+    } 
+
+    co2Serial.write( MHZ19Cmd_getCO2, 9 ); 
+    co2Serial.flush();
+
+    int len = co2Serial.readBytes( response, 9 );
+    if ( len != 9 )
+    {
+        ERR( "Wrong resp length: %x!", len );
+        terminal.print( "Wrong resp len from MHZ-19: " );
+        terminal.println( len );
+        terminal.flush();
+        
+        return -1;
+    }
+    if ( response[0] != 0xFF )
+    {
+        ERR( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
+        terminal.println( "Wrong starting byte MHZ-19" );
+        terminal.flush();
+        
+        return -1;
+    }
+    if ( response[1] != 0x85 )
+    {
+        ERR( "Wrong command from CO2 sensor! " );
+        terminal.println( "Wrong command MHZ-19" );
+        terminal.flush();
+        
+        return -1;
+    }
+    byte crc = getCRC( response, 9 );
+    if ( response[ 8 ] != crc )
+    {
+        ERR( "Wrong CRC from CO2 sensor!" );
+        terminal.println( "Wrong CRC MHZ-19" );
+        terminal.flush();
+        
+        return -1;
+    }
+    return ( response[ 4 ] << 8 ) | response[ 5 ];
 }
 
 void readMHZ19()
-{
+{  
+    DBG( "Start" );   
+
     int i = 0;
+    bool MHZreadOK = false;
     ppm = -1;
-    while ( i < 2 && ppm == -1 )
+    while ( ppm == -1 && i < 5 )
     {
-        ppm = mhz19.getCO2();
-        if ( mhz19.errorCode != RESULT_OK )
+        ppm = readCO2();
+
+        if ( ppm != -1 )
         {
-            terminal.println( "[Error] Failed to recieve CO2 value" );
-            terminal.println( "Try to reset Serial connection" );
-            terminal.flush();
-
-            ERR( "[Error] Failed to recieve CO2 value. Try to reset Serial connection..." );
-
-            co2Serial.end();
-            co2Serial.begin( 9600 );
+            MHZreadOK = true;
+        }
+        else
+        {
             delay( 100 );
-            mhz19.begin( co2Serial );
-
-            ppm = -1;
             i++;
-
-            delay( 100 );
         }
     }
-    if ( ppm == -1 )
+    
+    if ( MHZreadOK )
+    {
+        led2.on();
+        led2.setColor( BLYNK_GREEN );
+        DBG( "Reading MHZ19 sensor ok" );
+
+        /* Update average value if read ok */
+        ppm_values.erase( ppm_values.begin() );
+        ppm_values.push_back( ppm );
+    
+        average_ppm_sum = getAverage( ppm_values );
+        average_ppm_diff = average_ppm_sum - average_ppm_prev;
+    
+        /* Stop led blinking if active */
+        if ( ticker.active() )
+        {
+            ticker.detach();
+        }
+        /* Set led indication */
+        if ( average_ppm_sum < CO2_LEVEL_AVERAGE )
+        {
+            setLeds( Led_Green );
+    
+            led1.on();
+            led1.setColor( BLYNK_GREEN );
+        }
+        else if ( average_ppm_sum < CO2_LEVEL_POOR )
+        {
+            setLeds( Led_Yellow );
+    
+            led1.on();
+            led1.setColor( BLYNK_YELLOW );
+        }
+        else 
+        {
+            setLeds( Led_Red );
+    
+            led1.on();
+            led1.setColor( BLYNK_RED );
+        }
+    }
+    else
     {
         mhz19_errors++;
         
         led2.on();
         led2.setColor( BLYNK_YELLOW );
 
-        ERR( "Reading MHZ19 sensor failed" );        
-        terminal.println( "[Error] Reading MHZ19 sensor failed" );
+        ERR( "MHZ19 failed at %s", getFormattedUptime().c_str() );        
+        terminal.print( "MHZ19 failed at " );
+        terminal.println( getFormattedUptime() );
         terminal.flush();
-
-        return;
     }
-    else
-    {
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
-        DBG( "Reading MHZ19 sensor ok" );
-    }
-    
-    ppm_values.erase( ppm_values.begin() );
-    ppm_values.push_back( ppm );
 
-    average_ppm_sum = getAverage( ppm_values );
-    average_ppm_diff = average_ppm_sum - average_ppm_prev;
-
-    /* Stop led blinking if active */
-    if ( ticker.active() )
-    {
-        ticker.detach();
-    }
-    /* Set led indication */
-    if ( average_ppm_sum < CO2_LEVEL_AVERAGE )
-    {
-        setLeds( Led_Green );
-
-        led1.on();
-        led1.setColor( BLYNK_GREEN );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
-    }
-    else if ( average_ppm_sum < CO2_LEVEL_POOR )
-    {
-        setLeds( Led_Yellow );
-
-        led1.on();
-        led1.setColor( BLYNK_YELLOW );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
-    }
-    else 
-    {
-        setLeds( Led_Red );
-
-        led1.on();
-        led1.setColor( BLYNK_RED );
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
-    }
+    DBG( "End" );
 }
 
 void readDHT22()
 {
+    DBG( "Start" );    
+      
     bool DHTreadOK = false;
     int i = 0;
     while ( i < 5 && !DHTreadOK )
@@ -533,15 +628,21 @@ void readDHT22()
         terminal.println( "[Error] Reading DHT22 sensor failed" );
         terminal.flush();
     }
+
+    DBG( "End" );        
 }
 
 void readADC()
 {
+    DBG( "Start" );    
+  
     adcvalue = analogRead( ADC_PIN );
     if ( Blynk.connected() )
     {
         Blynk.virtualWrite( V5, adcvalue );
     }
+
+    DBG( "End" );        
 }
 
 void SayHello()
@@ -592,6 +693,8 @@ void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
 
 void sendUptime()
 {
+    DBG( "Start" );    
+  
     if ( Blynk.connected() )
     {
         Blynk.virtualWrite( V99, millis() / 1000 );
@@ -600,10 +703,14 @@ void sendUptime()
         Blynk.virtualWrite( V97, mhz19_errors );
         Blynk.virtualWrite( V98, dht22_errors );
     }
+
+    DBG( "End" );        
 }
 
 void sendResults()
 {
+    DBG( "Start" );    
+  
     /* DHT info */
     Blynk.virtualWrite( V1, h );
     Blynk.virtualWrite( V2, t );
@@ -612,47 +719,56 @@ void sendResults()
     /* MHZ-19 info */
     Blynk.virtualWrite( V4, average_ppm_sum );
     Blynk.virtualWrite( V6, average_ppm_diff );
-    
+
+    /* We should compare with previous sent value */
+    average_ppm_prev = average_ppm_sum;
+
+#if ENABLE_BLYNK_LOGS
     terminal.print( "Home weather : " );
     terminal.print( h );
-    terminal.print( "%, " );
+    terminal.print( " %, " );
     terminal.print( t );
     terminal.print( " C, " );
     terminal.print( hi );
     terminal.println( " C" );
     terminal.print( "C02 average  : " );
     terminal.print( average_ppm_sum );
-    terminal.print( " ppm" );
-    terminal.print( " (diff: " );
+    terminal.print( " ppm " );
+    terminal.print( "(diff: " );
     terminal.print( average_ppm_diff );
     terminal.println( " ppm)" );
     terminal.flush();
+#endif
 
-    /* We should compare with previous sent value */
-    average_ppm_prev = average_ppm_sum;
+//    DBG( "===================================================" );
+//    DBG( "UpTime: %s", getFormattedUptime().c_str() );
+//    DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
+//    DBG( "Humidity: %.1f %%", h );
+//    DBG( "Temperature: %.1f C (%.1f F)", t, f );
+//    DBG( "Feels like: %.1f C", hi );
+//    DBG( "C02: %d ppm", ppm );
+//    DBG( "C02 average: %d ppm", average_ppm_sum );
+//    DBG( "===================================================" );
 
-    DBG( "===================================================" );
-    DBG( "UpTime: %s", getFormattedUptime().c_str() );
-    DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
-    DBG( "Humidity: %.1f %%", h );
-    DBG( "Temperature: %.1f C (%.1f F)", t, f );
-    DBG( "Feels like: %.1f C", hi );
-    DBG( "C02: %d ppm", ppm );
-    DBG( "C02 average: %d ppm", average_ppm_sum );
-    DBG( "===================================================" );
+    DBG( "End" );        
+}
+
+void clearErrors()
+{
+    mhz19_errors = 0;
+    dht22_errors = 0;
 }
 
 // Setup
 void setup()
 {
     Serial.begin( 115200 );
-    delay( 100 );
-
+    
     co2Serial.begin( 9600 );
-    mhz19.begin( co2Serial );
-    mhz19.autoCalibration( true );
-    mhz19.setRange( 2000 );
-    delay( 100 );
+    co2Serial.write( MHZ19Cmd_setRange2k, 9 );
+    co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
+    
+    delay( 1000 );
 
     dht.begin();
 
@@ -827,10 +943,11 @@ void setup()
         timeClient.begin();
     }
 
-    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
-    timer.setInterval( TIMER_NOTIFY, notify );
+    timer.setInterval( TIMER_CLEAR_ERRORS, clearErrors );
     timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
     timer.setInterval( TIMER_READ_DHT22, readDHT22 );
+    timer.setInterval( TIMER_NOTIFY, notify );
+    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
     timer.setInterval( TIMER_SEND_RESULTS, sendResults );
     // timer.setInterval( TIMER_READ_ADC, readADC );
     
@@ -896,7 +1013,7 @@ void loop()
     ESP.wdtFeed();
 
     /* Disable led indication for evening */
-    if ( timeClient.getHours() >= LED_HOUR_DISABLE || timeClient.getHours() <= LED_HOUR_ENABLE )
+    if ( timeClient.getHours() >= LED_HOUR_DISABLE || timeClient.getHours() < LED_HOUR_ENABLE )
     {
         ledXState = LED_OFF;
     }
@@ -909,27 +1026,30 @@ void loop()
     int buttonS1State = digitalRead( BUTTON_S1_PIN );
     int buttonS2State = digitalRead( BUTTON_S2_PIN );
 
-    if ( buttonS1State == 0 )
+    if ( buttonS2State == 0 )
     {
         restartMcu();
     }
 
     static unsigned long lastCalibrationTime = 0;
     static bool calibrationStatus = false;
-    if ( buttonS2State == 0 )
+    if ( buttonS1State == 0 )
     {
-        if ( millis() - lastCalibrationTime > 10000 )
+        if ( millis() - lastCalibrationTime > 5000 )
         {         
-            mhz19.autoCalibration( calibrationStatus );
             if ( calibrationStatus )
             {
                 DBG( "Set MHZ-19 ABC on..." );
                 terminal.println( "Set MHZ-19 ABC on..." );
+
+                co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
             } 
             else 
             {
                 DBG( "Set MHZ-19 ABC off..." );
                 terminal.println( "Set MHZ-19 ABC off..." );
+
+                co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
             }
             terminal.flush();
 
