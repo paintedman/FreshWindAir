@@ -282,11 +282,16 @@ static void formatFlash()
 static int getAverage( std::vector<int> v ) 
 {
     int sum = 0;
+    int count = 0;
     for ( size_t i = 0; i < v.size(); ++i ) 
     {
-        sum += v[ i ];
+        if ( v[ i ] != 0 )
+        {
+            sum += v[ i ];
+            count++;
+        }            
     }
-    return sum / v.size();
+    return sum / count;
 }
 
 BLYNK_WRITE( V101 )
@@ -511,7 +516,7 @@ void readMHZ19()
     int i = 0;
     bool MHZreadOK = false;
     ppm = -1;
-    while ( ppm == -1 && i < 5 )
+    while ( ppm == -1 && i < 2 )
     {
         ppm = readCO2();
 
