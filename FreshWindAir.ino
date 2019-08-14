@@ -61,22 +61,22 @@
 
 #if ENABLE_LOGS
     #if ENABLE_DEBUG_LOGS
-        #define DBG( fmt, args... ) Serial.printf( "[%lu][DBG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+        #define SERIAL_DBG( fmt, args... ) Serial.printf( "[%lu][DBG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
     #else
-        #define DBG( fmt, args... )
+        #define SERIAL_DBG( fmt, args... )
     #endif
-    #define ERR( fmt, args... ) Serial.printf( "[%lu][ERR][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
-    #define MSG( fmt, args... ) Serial.printf( "[%lu][MSG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+    #define SERIAL_ERR( fmt, args... ) Serial.printf( "[%lu][ERR][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+    #define SERIAL_MSG( fmt, args... ) Serial.printf( "[%lu][MSG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
 #else
-    #define DBG( fmt, args... )
-    #define ERR( fmt, args... )
-    #define MSG( fmt, args... )
+    #define SERIAL_DBG( fmt, args... )
+    #define SERIAL_ERR( fmt, args... )
+    #define SERIAL_MSG( fmt, args... )
 #endif
 
 #if ENABLE_BLYNK_LOGS
     char blynk_msg[ 255 ];
 
-    #define BLYNK_DBG( fmt, args... ) \
+    #define BLYNK_MSG( fmt, args... ) \
         do { \
             sprintf( blynk_msg, "[%s (%s)]\n" fmt "\n\n", \
                 getFormattedTime().c_str(), getFormattedUptime().c_str(), ##args ); \
@@ -84,7 +84,7 @@
             terminal.flush(); \
         } while( 0 )
 #else
-    #define BLYNK_DBG( fmt, ARGS )
+    #define BLYNK_MSG( fmt, ARGS )
 #endif
 
 #define SW_VERSION          "0.3.5"
@@ -277,8 +277,8 @@ static void setLeds( int colors )
 
 static void restartMcu()
 {
-    BLYNK_DBG( "Restart in 3..2..1.." );
-    MSG( "Restart in 3..2..1.." );
+    BLYNK_MSG( "Restart in 3..2..1.." );
+    SERIAL_MSG( "Restart in 3..2..1.." );
 
     setLeds( Led_Green | Led_Yellow | Led_Red );
     
@@ -287,8 +287,8 @@ static void restartMcu()
 
 static void resetWifiSettings() 
 {
-    BLYNK_DBG( "Reset WiFi settings in 3..2..1.." );
-    MSG( "Reset WiFi settings in 3..2..1.." );
+    BLYNK_MSG( "Reset WiFi settings in 3..2..1.." );
+    SERIAL_MSG( "Reset WiFi settings in 3..2..1.." );
 
     // wifiManager.resetSettings(); 
     restartMcu();
@@ -296,8 +296,8 @@ static void resetWifiSettings()
 
 static void formatFlash() 
 {
-    BLYNK_DBG( "Format flash in 3..2..1.." );
-    MSG( "Format flash in 3..2..1.." );
+    BLYNK_MSG( "Format flash in 3..2..1.." );
+    SERIAL_MSG( "Format flash in 3..2..1.." );
 
     SPIFFS.format();
     restartMcu();
@@ -364,9 +364,9 @@ BLYNK_WRITE( V107 )
     float v107 = param.asInt();
 
     temp_correction = v107;
-    DBG( "temp_correction (C): %.1f", temp_correction );
 
-    BLYNK_DBG( "temp_correction (C): %f", temp_correction );
+    SERIAL_DBG( "temp_correction (C): %.1f", temp_correction );
+    BLYNK_MSG( "temp_correction (C): %f", temp_correction );
 }
 
 BLYNK_WRITE( V110 )
@@ -381,7 +381,7 @@ BLYNK_WRITE( V110 )
     {
         ledXState = 1000;
     }
-    DBG( "ledXState: %d", ledXState );
+    SERIAL_DBG( "ledXState: %d", ledXState );
 }
 
 void tick()
@@ -419,10 +419,10 @@ void configModeCallback( WiFiManager* myWiFiManager )
     ( void ) myWiFiManager;
   
     //gets called when WiFiManager enters configuration mode
-    DBG( "Entered config mode" );
-    DBG( "%s", WiFi.softAPIP().toString().c_str() );
+    SERIAL_DBG( "Entered config mode" );
+    SERIAL_DBG( "%s", WiFi.softAPIP().toString().c_str() );
     //if you used auto generated SSID, print it
-    DBG( "%s", myWiFiManager->getConfigPortalSSID().c_str() );
+    SERIAL_DBG( "%s", myWiFiManager->getConfigPortalSSID().c_str() );
     //entered config mode, make led toggle faster
     ticker.attach( 0.2, led_toggle_r );
 }
@@ -430,7 +430,7 @@ void configModeCallback( WiFiManager* myWiFiManager )
 void saveConfigCallback()
 {  
     //callback notifying us of the need to save config
-    DBG( "Should save config" );
+    SERIAL_DBG( "Should save config" );
     shouldSaveConfig = true;
     ticker.attach( 0.2, led_toggle_r );  // led toggle faster
 }
@@ -441,14 +441,14 @@ void saveConfigCallback()
 
 void notify()
 {
-    DBG( "Start" );
+    SERIAL_DBG( "Start" );
   
     if ( average_ppm_sum <= CO2_LEVEL_AVERAGE )
     {
         if ( notify_flag )
         {
-            BLYNK_DBG( "CO2 returns back to secure level" );
-            DBG( "CO2 returns back to secure level" );
+            BLYNK_MSG( "CO2 returns back to secure level" );
+            SERIAL_DBG( "CO2 returns back to secure level" );
         }
         notify_flag = false;
     }
@@ -456,8 +456,8 @@ void notify()
     {
         Blynk.notify( String( "CO2 level > " ) + CO2_LEVEL_POOR + ". Please Open Window." );
 
-        BLYNK_DBG( "Sending notify to phone. ppm > %d", CO2_LEVEL_POOR );
-        DBG( "Sending notify to phone. CO2 level > %d", CO2_LEVEL_POOR );
+        BLYNK_MSG( "Sending notify to phone. ppm > %d", CO2_LEVEL_POOR );
+        SERIAL_DBG( "Sending notify to phone. CO2 level > %d", CO2_LEVEL_POOR );
 
         if ( notify_flag_beep )
         {
@@ -470,7 +470,7 @@ void notify()
         notify_flag = true;
     }
 
-    DBG( "End" );    
+    SERIAL_DBG( "End" );    
 }
 
 int readCO2()
@@ -478,10 +478,10 @@ int readCO2()
     byte response[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     /* Clear RX buffer before sending command */
-    DBG( "data available before command: %d", co2Serial.available() );
+    SERIAL_DBG( "data available before command: %d", co2Serial.available() );
     while ( co2Serial.available() > 0 ) 
     {
-        DBG( "remove 0x%02x byte from buffer", co2Serial.peek() );
+        SERIAL_DBG( "remove 0x%02x byte from buffer", co2Serial.peek() );
         co2Serial.read();
     } 
 
@@ -491,30 +491,30 @@ int readCO2()
     int len = co2Serial.readBytes( response, 9 );
     if ( len != 9 )
     {
-        ERR( "Wrong resp length: %x!", len );
-        BLYNK_DBG( "Wrong resp len from MHZ-19: 0x%0x", len );
+        SERIAL_ERR( "Wrong resp length: %x!", len );
+        BLYNK_MSG( "Wrong resp len from MHZ-19: 0x%0x", len );
 
         return -1;
     }
     if ( response[0] != 0xFF )
     {
-        ERR( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
-        BLYNK_DBG( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
+        SERIAL_ERR( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
+        BLYNK_MSG( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
         
         return -1;
     }
     if ( response[1] != 0x85 )
     {
-        ERR( "Wrong command from CO2 sensor! " );
-        BLYNK_DBG( "Wrong command MHZ-19" );
+        SERIAL_ERR( "Wrong command from CO2 sensor! " );
+        BLYNK_MSG( "Wrong command MHZ-19" );
         
         return -1;
     }
     byte crc = getCRC( response, 9 );
     if ( response[ 8 ] != crc )
     {
-        ERR( "Wrong CRC from CO2 sensor!" );
-        BLYNK_DBG( "Wrong CRC MHZ-19" );
+        SERIAL_ERR( "Wrong CRC from CO2 sensor!" );
+        BLYNK_MSG( "Wrong CRC MHZ-19" );
         
         return -1;
     }
@@ -523,7 +523,7 @@ int readCO2()
 
 void readMHZ19()
 {  
-    DBG( "Start" );   
+    SERIAL_DBG( "Start" );   
 
     int i = 0;
     bool MHZreadOK = false;
@@ -547,7 +547,7 @@ void readMHZ19()
     {
         led2.on();
         led2.setColor( BLYNK_GREEN );
-        DBG( "Reading MHZ19 sensor ok" );
+        SERIAL_DBG( "Reading MHZ19 sensor ok" );
 
         /* Update average value if read ok */
         ppm_values.erase( ppm_values.begin() );
@@ -591,16 +591,16 @@ void readMHZ19()
         led2.on();
         led2.setColor( BLYNK_YELLOW );
 
-        ERR( "MHZ19 failed at %s", getFormattedUptime().c_str() );        
+        SERIAL_ERR( "MHZ19 failed at %s", getFormattedUptime().c_str() );        
         BLYNK_DBG( "MHZ19 failed" );
     }
 
-    DBG( "End" );
+    SERIAL_DBG( "End" );
 }
 
 void readDHT22()
 {
-    DBG( "Start" );    
+    SERIAL_DBG( "Start" );    
       
     bool DHTreadOK = false;
     int i = 0;
@@ -630,7 +630,7 @@ void readDHT22()
     {
         led2.on();
         led2.setColor( BLYNK_GREEN );
-        DBG( "Reading DHT22 sensor ok" );
+        SERIAL_DBG( "Reading DHT22 sensor ok" );
     }
     else
     {
@@ -639,16 +639,16 @@ void readDHT22()
         led2.on();
         led2.setColor( BLYNK_RED );
 
-        ERR( "Reading DHT22 sensor failed" );
+        SERIAL_ERR( "Reading DHT22 sensor failed" );
         BLYNK_DBG( "Reading DHT22 sensor failed" );
     }
 
-    DBG( "End" );        
+    SERIAL_DBG( "End" );        
 }
 
 void readADC()
 {
-    DBG( "Start" );    
+    SERIAL_DBG( "Start" );    
   
     adcvalue = analogRead( ADC_PIN );
     if ( Blynk.connected() )
@@ -656,40 +656,40 @@ void readADC()
         Blynk.virtualWrite( V5, adcvalue );
     }
 
-    DBG( "End" );        
+    SERIAL_DBG( "End" );        
 }
 
 void SayHello()
 {
-    MSG( "====== SYSTEM-STATUS ================================" );
+    SERIAL_MSG( "====== SYSTEM-STATUS ================================" );
     
-    MSG( "Device name: %s", Hostname );
-    MSG( "Software version: %s", SW_VERSION );
-    MSG( "FreeHeap: %d", ESP.getFreeHeap() );
-    MSG( "ChipId: %d", ESP.getChipId() );               //ESP8266 chip IDE, int 32bit
-    MSG( "FlashChipId: %d", ESP.getFlashChipId() );     //flash chip ID, int 32bit
-    MSG( "FlashChipSize: %d", ESP.getFlashChipSize() );
-    MSG( "FlashChipSpeed: %d", ESP.getFlashChipSpeed() );
-    MSG( "CycleCount: %d", ESP.getCycleCount() );       //unsigned 32-bit
-    MSG( "Time: %s", timeClient.getFormattedTime().c_str() );
-    MSG( "UpTime: %s", getFormattedUptime().c_str() );
+    SERIAL_MSG( "Device name: %s", Hostname );
+    SERIAL_MSG( "Software version: %s", SW_VERSION );
+    SERIAL_MSG( "FreeHeap: %d", ESP.getFreeHeap() );
+    SERIAL_MSG( "ChipId: %d", ESP.getChipId() );               //ESP8266 chip IDE, int 32bit
+    SERIAL_MSG( "FlashChipId: %d", ESP.getFlashChipId() );     //flash chip ID, int 32bit
+    SERIAL_MSG( "FlashChipSize: %d", ESP.getFlashChipSize() );
+    SERIAL_MSG( "FlashChipSpeed: %d", ESP.getFlashChipSpeed() );
+    SERIAL_MSG( "CycleCount: %d", ESP.getCycleCount() );       //unsigned 32-bit
+    SERIAL_MSG( "Time: %s", timeClient.getFormattedTime().c_str() );
+    SERIAL_MSG( "UpTime: %s", getFormattedUptime().c_str() );
 
-    MSG( "====== BLYNK-STATUS =================================" );
-    MSG( "Blynk token: %s", blynk_token );
-    MSG( "Blynk connected: %d", Blynk.connected() );
-    MSG( "Beep: %d", notify_flag_beep );
-    MSG( "Temperature correction: %.1f C", temp_correction );
-    MSG( "ledXState: %d", ledXState );
+    SERIAL_MSG( "====== BLYNK-STATUS =================================" );
+    SERIAL_MSG( "Blynk token: %s", blynk_token );
+    SERIAL_MSG( "Blynk connected: %d", Blynk.connected() );
+    SERIAL_MSG( "Beep: %d", notify_flag_beep );
+    SERIAL_MSG( "Temperature correction: %.1f C", temp_correction );
+    SERIAL_MSG( "ledXState: %d", ledXState );
 
-    MSG( "====== NETWORK-STATUS ===============================" );
-    MSG( "WiFi network: %s", WiFi.SSID().c_str() );
-    MSG( "WiFi status: %d", WiFi.status() );
-    MSG( "RSSI: %d", WiFi.RSSI() );
-    MSG( "MAC: %s", WiFi.macAddress().c_str() );
-    MSG( "IP: %s", WiFi.localIP().toString().c_str() );
-    MSG( "Online: %d", online );
+    SERIAL_MSG( "====== NETWORK-STATUS ===============================" );
+    SERIAL_MSG( "WiFi network: %s", WiFi.SSID().c_str() );
+    SERIAL_MSG( "WiFi status: %d", WiFi.status() );
+    SERIAL_MSG( "RSSI: %d", WiFi.RSSI() );
+    SERIAL_MSG( "MAC: %s", WiFi.macAddress().c_str() );
+    SERIAL_MSG( "IP: %s", WiFi.localIP().toString().c_str() );
+    SERIAL_MSG( "Online: %d", online );
 
-    MSG( "====== END-of-STATUS ================================\n" );
+    SERIAL_MSG( "====== END-of-STATUS ================================\n" );
 
 }
 
@@ -707,7 +707,7 @@ void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
 
 void sendUptime()
 {
-    DBG( "Start" );    
+    SERIAL_DBG( "Start" );    
   
     if ( Blynk.connected() )
     {
@@ -718,12 +718,12 @@ void sendUptime()
         Blynk.virtualWrite( V98, dht22_errors );
     }
 
-    DBG( "End" );        
+    SERIAL_DBG( "End" );        
 }
 
 void sendResults()
 {
-    DBG( "Start" );    
+    SERIAL_DBG( "Start" );    
   
     /* DHT info */
     Blynk.virtualWrite( V1, h );
@@ -741,18 +741,18 @@ void sendResults()
     BLYNK_DBG( "Home weather : %.1f %%, %.1f C, %.1f C", h, t, hi );
     BLYNK_DBG( "C02 average  : %d ppm (diff: %d ppm)", average_ppm_sum, average_ppm_diff );
 
-    DBG( "===================================================" );
-    DBG( "UpTime: %s", getFormattedUptime().c_str() );
-    DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
-    DBG( "Humidity: %.1f %%", h );
-    DBG( "Temperature: %.1f C (%.1f F)", t, f );
-    DBG( "Feels like: %.1f C", hi );
-    DBG( "C02: %d ppm", ppm );
-    DBG( "C02 average: %d ppm", average_ppm_sum );
-    DBG( "===================================================" );
+    SERIAL_DBG( "===================================================" );
+    SERIAL_DBG( "UpTime: %s", getFormattedUptime().c_str() );
+    SERIAL_DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
+    SERIAL_DBG( "Humidity: %.1f %%", h );
+    SERIAL_DBG( "Temperature: %.1f C (%.1f F)", t, f );
+    SERIAL_DBG( "Feels like: %.1f C", hi );
+    SERIAL_DBG( "C02: %d ppm", ppm );
+    SERIAL_DBG( "C02 average: %d ppm", average_ppm_sum );
+    SERIAL_DBG( "===================================================" );
 #endif
 
-    DBG( "End" );        
+    SERIAL_DBG( "End" );        
 }
 
 void clearErrors()
@@ -791,29 +791,29 @@ void setup()
     // Check flash size   
     if ( ESP.getFlashChipRealSize() == ESP.getFlashChipSize() )
     {
-        DBG( "flash correctly configured, SPIFFS starts, IDE size: %d, match real size: %d",
+        SERIAL_DBG( "flash correctly configured, SPIFFS starts, IDE size: %d, match real size: %d",
             ESP.getFlashChipSize(), ESP.getFlashChipRealSize() );
     }
     else
     {
-        DBG( "flash incorrectly configured, SPIFFS cannot start, IDE size: %d, real size: %d",
+        SERIAL_DBG( "flash incorrectly configured, SPIFFS cannot start, IDE size: %d, real size: %d",
             ESP.getFlashChipSize(), ESP.getFlashChipRealSize() );
     }
 
     //read configuration from FS json
-    DBG( "mounting FS..." );
+    SERIAL_DBG( "mounting FS..." );
 
     if ( SPIFFS.begin() )
     {
-        DBG( "mounted file system" );
+        SERIAL_DBG( "mounted file system" );
         if ( SPIFFS.exists( "/config.json" ) )
         {
             //file exists, reading and loading
-            DBG( "reading config file" );
+            SERIAL_DBG( "reading config file" );
             File configFile = SPIFFS.open( "/config.json", "r" );
             if ( configFile )
             {
-                DBG( "opened config file" );
+                SERIAL_DBG( "opened config file" );
                 size_t size = configFile.size();
                 // Allocate a buffer to store contents of the file.
                 std::unique_ptr<char[]> buf(new char[size]);
@@ -824,20 +824,20 @@ void setup()
                 json.printTo( Serial );
                 if ( json.success() )
                 {
-                    DBG( "parsed json" );
+                    SERIAL_DBG( "parsed json" );
 
                     strcpy( blynk_token, json[ "blynk_token" ] );
                 }
                 else
                 {
-                    ERR( "Failed to load json config" );
+                    SERIAL_ERR( "Failed to load json config" );
                 }
             }
         }
     }
     else
     {
-        ERR( "Failed to mount FS" );
+        SERIAL_ERR( "Failed to mount FS" );
     }
     //end read
 
@@ -856,7 +856,7 @@ void setup()
     int buttonS1State = digitalRead( BUTTON_S1_PIN );
     if ( buttonS1State == 0 )
     {
-        DBG( "Reset Wi-Fi settings" );
+        SERIAL_DBG( "Reset Wi-Fi settings" );
         wifiManager.resetSettings();
     }
 
@@ -879,13 +879,13 @@ void setup()
     {
         if ( blynk_token[ 0 ] != '\0' )
         {
-            ERR( "Failed to go online for Blynk, restarting.." );
+            SERIAL_ERR( "Failed to go online for Blynk, restarting.." );
             delay( 2000 );
             ESP.restart();
         }
         else
         {
-            ERR( "Failed to go online, offline mode activated" );
+            SERIAL_ERR( "Failed to go online, offline mode activated" );
             online = false;
             tones( 13, 2000, 50 );
         }
@@ -902,7 +902,7 @@ void setup()
         if ( shouldSaveConfig )
         {      
             //save the custom parameters to FS
-            DBG( "saving config" );
+            SERIAL_DBG( "saving config" );
             DynamicJsonBuffer jsonBuffer;
             JsonObject & json = jsonBuffer.createObject();
             json[ "blynk_token" ] = blynk_token;
@@ -910,7 +910,7 @@ void setup()
             File configFile = SPIFFS.open( "/config.json", "w" );
             if ( !configFile )
             {
-                ERR( "Failed to open config file for writing" );
+                SERIAL_ERR( "Failed to open config file for writing" );
             }
 
             json.printTo( Serial );
@@ -919,13 +919,13 @@ void setup()
             //end save
 
             delay( 1000 );
-            DBG( "Restart ESP to apply new WiFi settings.." );
+            SERIAL_DBG( "Restart ESP to apply new WiFi settings.." );
             ESP.restart();
         }
 
-        DBG( "WiFi network: %s", WiFi.SSID().c_str() );
-        DBG( "WiFi status: %d", WiFi.status() );
-        DBG( "Local ip: %s", WiFi.localIP().toString().c_str() );
+        SERIAL_DBG( "WiFi network: %s", WiFi.SSID().c_str() );
+        SERIAL_DBG( "WiFi status: %d", WiFi.status() );
+        SERIAL_DBG( "Local ip: %s", WiFi.localIP().toString().c_str() );
 
         if ( blynk_token[ 0 ] != '\0' )
         {
@@ -933,16 +933,16 @@ void setup()
             Blynk.config( blynk_token );
             Blynk.connect();
             
-            DBG( "blynk token: %s", blynk_token );
+            SERIAL_DBG( "blynk token: %s", blynk_token );
         }
         else
         {
-            DBG( "blynk auth token not set" );
+            SERIAL_DBG( "blynk auth token not set" );
         }
 
-        DBG( "FreshWindAir is ready!" );
+        SERIAL_DBG( "FreshWindAir is ready!" );
         
-        DBG( "Start time sync client\n\r" );
+        SERIAL_DBG( "Start time sync client\n\r" );
         timeClient.begin();
     }
 
@@ -982,8 +982,8 @@ void loop()
             }
             else
             {
-                DBG( "Reconnecting to blynk.. " );
-                DBG( "Blync connected: %d", Blynk.connected() );
+                SERIAL_DBG( "Reconnecting to blynk.. " );
+                SERIAL_DBG( "Blynk connected: %d", Blynk.connected() );
                 if ( !_blynkWifiClient.connected() )
                 {
                     connectBlynk();
@@ -992,7 +992,7 @@ void loop()
 
                 //FIXME: add exit after n-unsuccesfull tries.
                 Blynk.connect( 4000 );
-                DBG( "Blync connected: %d", Blynk.connected() );
+                SERIAL_DBG( "Blynk connected: %d", Blynk.connected() );
             }
         }
     }
@@ -1008,7 +1008,7 @@ void loop()
         }
         if ( ( ( uptime - wifilost_timer_start ) > wifilost_timer_max ) && wifilost_flag )
         {
-            ERR( "WiFi connection lost, restarting.." );
+            SERIAL_ERR( "WiFi connection lost, restarting.." );
             wifilost_flag = false;
             ESP.restart();
         }
@@ -1044,14 +1044,14 @@ void loop()
         {         
             if ( calibrationStatus )
             {
-                DBG( "Set MHZ-19 ABC on..." );
+                SERIAL_DBG( "Set MHZ-19 ABC on..." );
                 BLYNK_DBG( "Set MHZ-19 ABC on..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
             } 
             else 
             {
-                DBG( "Set MHZ-19 ABC off..." );
+                SERIAL_DBG( "Set MHZ-19 ABC off..." );
                 BLYNK_DBG( "Set MHZ-19 ABC off..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
