@@ -56,24 +56,38 @@
  * ------------------------- */ 
 
 #define ENABLE_LOGS         (0)
-#define ENABLE_BLYNK_LOGS   (0)
 #define ENABLE_DEBUG_LOGS   (0)
+#define ENABLE_BLYNK_LOGS   (1)
 
 #if ENABLE_LOGS
-  #if ENABLE_DEBUG_LOGS
-    #define DBG( fmt, args... ) Serial.printf( "[%lu][DBG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
-  #else
-    #define DBG( fmt, args... )
-  #endif
-  #define ERR( fmt, args... ) Serial.printf( "[%lu][ERR][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
-  #define MSG( fmt, args... ) Serial.printf( "[%lu][MSG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+    #if ENABLE_DEBUG_LOGS
+        #define DBG( fmt, args... ) Serial.printf( "[%lu][DBG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+    #else
+        #define DBG( fmt, args... )
+    #endif
+    #define ERR( fmt, args... ) Serial.printf( "[%lu][ERR][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
+    #define MSG( fmt, args... ) Serial.printf( "[%lu][MSG][%s] " fmt "\n", millis(), __FUNCTION__, ##args )
 #else
-  #define DBG( fmt, args... )
-  #define ERR( fmt, args... )
-  #define MSG( fmt, args... )
+    #define DBG( fmt, args... )
+    #define ERR( fmt, args... )
+    #define MSG( fmt, args... )
 #endif
 
-#define SW_VERSION          "0.3.0"
+#if ENABLE_BLYNK_LOGS
+    char blynk_msg[ 255 ];
+
+    #define BLYNK_DBG( fmt, args... ) \
+        do { \
+            sprintf( blynk_msg, "[%s (%s)]\n" fmt "\n\n", \
+                getFormattedTime().c_str(), getFormattedUptime().c_str(), ##args ); \
+            terminal.print( blynk_msg ); \
+            terminal.flush(); \
+        } while( 0 )
+#else
+    #define BLYNK_DBG( fmt, ARGS )
+#endif
+
+#define SW_VERSION          "0.3.5"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -210,6 +224,19 @@ static String getFormattedUptime()
     return daysStr + " days " + hoursStr + ":" + minuteStr + ":" + secondStr;
 }
 
+static String getFormattedTime()
+{
+    int seconds = timeClient.getSeconds();
+    int minutes = timeClient.getMinutes();
+    int hours = timeClient.getHours();
+
+    String hoursStr = hours < 10 ? "0" + String( hours ) : String( hours );
+    String minuteStr = minutes < 10 ? "0" + String( minutes ) : String( minutes );
+    String secondStr = seconds < 10 ? "0" + String( seconds ) : String( seconds );
+
+    return hoursStr + ":" + minuteStr + ":" + secondStr;
+}
+
 static byte getCRC( byte inBytes[], int size )
 {
     /* as shown in datasheet */
@@ -250,8 +277,7 @@ static void setLeds( int colors )
 
 static void restartMcu()
 {
-    terminal.println( "Restart in 3..2..1.." );
-    terminal.flush();
+    BLYNK_DBG( "Restart in 3..2..1.." );
     MSG( "Restart in 3..2..1.." );
 
     setLeds( Led_Green | Led_Yellow | Led_Red );
@@ -261,8 +287,7 @@ static void restartMcu()
 
 static void resetWifiSettings() 
 {
-    terminal.println( "Reset WiFi settings in 3..2..1.." );
-    terminal.flush();
+    BLYNK_DBG( "Reset WiFi settings in 3..2..1.." );
     MSG( "Reset WiFi settings in 3..2..1.." );
 
     // wifiManager.resetSettings(); 
@@ -271,8 +296,7 @@ static void resetWifiSettings()
 
 static void formatFlash() 
 {
-    terminal.println( "Format flash in 3..2..1.." );
-    terminal.flush();
+    BLYNK_DBG( "Format flash in 3..2..1.." );
     MSG( "Format flash in 3..2..1.." );
 
     SPIFFS.format();
@@ -342,9 +366,7 @@ BLYNK_WRITE( V107 )
     temp_correction = v107;
     DBG( "temp_correction (C): %.1f", temp_correction );
 
-    terminal.print( "temp_correction (C): " );
-    terminal.println( temp_correction );
-    terminal.flush();
+    BLYNK_DBG( "temp_correction (C): %f", temp_correction );
 }
 
 BLYNK_WRITE( V110 )
@@ -425,9 +447,7 @@ void notify()
     {
         if ( notify_flag )
         {
-            terminal.println( "CO2 returns back to secure level" );
-            terminal.flush();
-
+            BLYNK_DBG( "CO2 returns back to secure level" );
             DBG( "CO2 returns back to secure level" );
         }
         notify_flag = false;
@@ -436,10 +456,7 @@ void notify()
     {
         Blynk.notify( String( "CO2 level > " ) + CO2_LEVEL_POOR + ". Please Open Window." );
 
-        terminal.print( "Sending notify to phone. ppm > " );
-        terminal.println( CO2_LEVEL_POOR );
-        terminal.flush();
-
+        BLYNK_DBG( "Sending notify to phone. ppm > %d", CO2_LEVEL_POOR );
         DBG( "Sending notify to phone. CO2 level > %d", CO2_LEVEL_POOR );
 
         if ( notify_flag_beep )
@@ -475,25 +492,21 @@ int readCO2()
     if ( len != 9 )
     {
         ERR( "Wrong resp length: %x!", len );
-        terminal.print( "Wrong resp len from MHZ-19: " );
-        terminal.println( len );
-        terminal.flush();
-        
+        BLYNK_DBG( "Wrong resp len from MHZ-19: 0x%0x", len );
+
         return -1;
     }
     if ( response[0] != 0xFF )
     {
         ERR( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
-        terminal.println( "Wrong starting byte MHZ-19" );
-        terminal.flush();
+        BLYNK_DBG( "Wrong starting byte from CO2 sensor: %x!", response[ 0 ] );
         
         return -1;
     }
     if ( response[1] != 0x85 )
     {
         ERR( "Wrong command from CO2 sensor! " );
-        terminal.println( "Wrong command MHZ-19" );
-        terminal.flush();
+        BLYNK_DBG( "Wrong command MHZ-19" );
         
         return -1;
     }
@@ -501,8 +514,7 @@ int readCO2()
     if ( response[ 8 ] != crc )
     {
         ERR( "Wrong CRC from CO2 sensor!" );
-        terminal.println( "Wrong CRC MHZ-19" );
-        terminal.flush();
+        BLYNK_DBG( "Wrong CRC MHZ-19" );
         
         return -1;
     }
@@ -580,9 +592,7 @@ void readMHZ19()
         led2.setColor( BLYNK_YELLOW );
 
         ERR( "MHZ19 failed at %s", getFormattedUptime().c_str() );        
-        terminal.print( "MHZ19 failed at " );
-        terminal.println( getFormattedUptime() );
-        terminal.flush();
+        BLYNK_DBG( "MHZ19 failed" );
     }
 
     DBG( "End" );
@@ -630,8 +640,7 @@ void readDHT22()
         led2.setColor( BLYNK_RED );
 
         ERR( "Reading DHT22 sensor failed" );
-        terminal.println( "[Error] Reading DHT22 sensor failed" );
-        terminal.flush();
+        BLYNK_DBG( "Reading DHT22 sensor failed" );
     }
 
     DBG( "End" );        
@@ -728,32 +737,20 @@ void sendResults()
     /* We should compare with previous sent value */
     average_ppm_prev = average_ppm_sum;
 
-#if ENABLE_BLYNK_LOGS
-    terminal.print( "Home weather : " );
-    terminal.print( h );
-    terminal.print( " %, " );
-    terminal.print( t );
-    terminal.print( " C, " );
-    terminal.print( hi );
-    terminal.println( " C" );
-    terminal.print( "C02 average  : " );
-    terminal.print( average_ppm_sum );
-    terminal.print( " ppm " );
-    terminal.print( "(diff: " );
-    terminal.print( average_ppm_diff );
-    terminal.println( " ppm)" );
-    terminal.flush();
-#endif
+#if 0
+    BLYNK_DBG( "Home weather : %.1f %%, %.1f C, %.1f C", h, t, hi );
+    BLYNK_DBG( "C02 average  : %d ppm (diff: %d ppm)", average_ppm_sum, average_ppm_diff );
 
-//    DBG( "===================================================" );
-//    DBG( "UpTime: %s", getFormattedUptime().c_str() );
-//    DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
-//    DBG( "Humidity: %.1f %%", h );
-//    DBG( "Temperature: %.1f C (%.1f F)", t, f );
-//    DBG( "Feels like: %.1f C", hi );
-//    DBG( "C02: %d ppm", ppm );
-//    DBG( "C02 average: %d ppm", average_ppm_sum );
-//    DBG( "===================================================" );
+    DBG( "===================================================" );
+    DBG( "UpTime: %s", getFormattedUptime().c_str() );
+    DBG( "Time: %s", timeClient.getFormattedTime().c_str() );
+    DBG( "Humidity: %.1f %%", h );
+    DBG( "Temperature: %.1f C (%.1f F)", t, f );
+    DBG( "Feels like: %.1f C", hi );
+    DBG( "C02: %d ppm", ppm );
+    DBG( "C02 average: %d ppm", average_ppm_sum );
+    DBG( "===================================================" );
+#endif
 
     DBG( "End" );        
 }
@@ -772,8 +769,9 @@ void setup()
     co2Serial.begin( 9600 );
     co2Serial.write( MHZ19Cmd_setRange2k, 9 );
     co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
-    
-    delay( 1000 );
+
+    /* Wait MHZ-19 to become ready */
+    delay( 5000 );
 
     dht.begin();
 
@@ -958,6 +956,8 @@ void setup()
     
     // Serial.setDebugOutput( true );
 
+    BLYNK_DBG( "------ FreshWindAir started! ------" );
+
     ESP.wdtDisable();
 }
 
@@ -1045,18 +1045,17 @@ void loop()
             if ( calibrationStatus )
             {
                 DBG( "Set MHZ-19 ABC on..." );
-                terminal.println( "Set MHZ-19 ABC on..." );
+                BLYNK_DBG( "Set MHZ-19 ABC on..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
             } 
             else 
             {
                 DBG( "Set MHZ-19 ABC off..." );
-                terminal.println( "Set MHZ-19 ABC off..." );
+                BLYNK_DBG( "Set MHZ-19 ABC off..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
             }
-            terminal.flush();
 
             calibrationStatus = !calibrationStatus;  
             lastCalibrationTime = millis();
