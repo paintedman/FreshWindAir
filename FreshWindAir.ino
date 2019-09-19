@@ -57,6 +57,7 @@
 
 #define ENABLE_LOGS         (0)
 #define ENABLE_DEBUG_LOGS   (0)
+
 #define ENABLE_BLYNK_LOGS   (1)
 
 #if ENABLE_LOGS
@@ -87,7 +88,7 @@
     #define BLYNK_MSG( fmt, ARGS )
 #endif
 
-#define SW_VERSION          "0.3.5"
+#define SW_VERSION          "0.3.6"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -110,11 +111,12 @@
 /* Sketch parameters */
 #define FILTER_POINTS       (6)
 
+#define TIMER_MAIN_CYCLE    (10000L)
 #define TIMER_READ_MHZ19    (10000L)
 #define TIMER_READ_DHT22    (20000L)
 #define TIMER_NOTIFY        (20000L)
 #define TIMER_SEND_RESULTS  (20000L)
-#define TIMER_SEND_UPTIME   (5000L)
+#define TIMER_SEND_UPTIME   (10000L)
 #define TIMER_READ_ADC      (60000L)
 #define TIMER_CLEAR_ERRORS  (86400000L)
 
@@ -592,7 +594,7 @@ void readMHZ19()
         led2.setColor( BLYNK_YELLOW );
 
         SERIAL_ERR( "MHZ19 failed at %s", getFormattedUptime().c_str() );        
-        BLYNK_DBG( "MHZ19 failed" );
+        BLYNK_MSG( "MHZ19 failed" );
     }
 
     SERIAL_DBG( "End" );
@@ -640,7 +642,7 @@ void readDHT22()
         led2.setColor( BLYNK_RED );
 
         SERIAL_ERR( "Reading DHT22 sensor failed" );
-        BLYNK_DBG( "Reading DHT22 sensor failed" );
+        BLYNK_MSG( "Reading DHT22 sensor failed" );
     }
 
     SERIAL_DBG( "End" );        
@@ -738,8 +740,8 @@ void sendResults()
     average_ppm_prev = average_ppm_sum;
 
 #if 0
-    BLYNK_DBG( "Home weather : %.1f %%, %.1f C, %.1f C", h, t, hi );
-    BLYNK_DBG( "C02 average  : %d ppm (diff: %d ppm)", average_ppm_sum, average_ppm_diff );
+    BLYNK_MSG( "Home weather : %.1f %%, %.1f C, %.1f C", h, t, hi );
+    BLYNK_MSG( "C02 average  : %d ppm (diff: %d ppm)", average_ppm_sum, average_ppm_diff );
 
     SERIAL_DBG( "===================================================" );
     SERIAL_DBG( "UpTime: %s", getFormattedUptime().c_str() );
@@ -759,6 +761,15 @@ void clearErrors()
 {
     mhz19_errors = 0;
     dht22_errors = 0;
+}
+
+void mainCycle() 
+{
+    readMHZ19();
+    readDHT22();
+    notify();
+    sendUptime();
+    sendResults();
 }
 
 // Setup
@@ -946,17 +957,20 @@ void setup()
         timeClient.begin();
     }
 
+    timer.setInterval( TIMER_MAIN_CYCLE, mainCycle );
     timer.setInterval( TIMER_CLEAR_ERRORS, clearErrors );
-    timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
-    timer.setInterval( TIMER_READ_DHT22, readDHT22 );
-    timer.setInterval( TIMER_NOTIFY, notify );
-    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
-    timer.setInterval( TIMER_SEND_RESULTS, sendResults );
+    
+    // timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
+    // timer.setInterval( TIMER_READ_DHT22, readDHT22 );
+    // timer.setInterval( TIMER_NOTIFY, notify );
+    // timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
+    // timer.setInterval( TIMER_SEND_RESULTS, sendResults );
     // timer.setInterval( TIMER_READ_ADC, readADC );
     
     // Serial.setDebugOutput( true );
 
-    BLYNK_DBG( "------ FreshWindAir started! ------" );
+    BLYNK_MSG( "------ FreshWindAir started! ------" );
+    BLYNK_MSG( "------     version: %s    ------", SW_VERSION );
 
     ESP.wdtDisable();
 }
@@ -1045,14 +1059,14 @@ void loop()
             if ( calibrationStatus )
             {
                 SERIAL_DBG( "Set MHZ-19 ABC on..." );
-                BLYNK_DBG( "Set MHZ-19 ABC on..." );
+                BLYNK_MSG( "Set MHZ-19 ABC on..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
             } 
             else 
             {
                 SERIAL_DBG( "Set MHZ-19 ABC off..." );
-                BLYNK_DBG( "Set MHZ-19 ABC off..." );
+                BLYNK_MSG( "Set MHZ-19 ABC off..." );
 
                 co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
             }
