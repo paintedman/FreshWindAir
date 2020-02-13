@@ -8,13 +8,8 @@
 /*
  * Blynk values:
  * 
- * V1 - Humidity
- * V2 - Temperature in C
- * V3 - Temperature in F
  * V4 - Average CO2 ppm
- * V5 - ADC value
  * V6 - Difference of current average CO2 and previous
- * V7 - Humidity index
  * V8 - Uptime as string 
  * V97 - MHZ19 errors count
  * V98 - DHT22 errors count
@@ -39,9 +34,6 @@
 // https://github.com/plerup/espsoftwareserial
 #include <SoftwareSerial.h>
 
-// https://github.com/adafruit/DHT-sensor-library
-#include <DHT.h>
-
 //WiFiManager
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
@@ -55,8 +47,8 @@
  *        Definitions
  * ------------------------- */ 
 
-#define ENABLE_LOGS         (0)
-#define ENABLE_DEBUG_LOGS   (0)
+#define ENABLE_LOGS         (1)
+#define ENABLE_DEBUG_LOGS   (1)
 
 #define ENABLE_BLYNK_LOGS   (1)
 
@@ -88,7 +80,7 @@
     #define BLYNK_MSG( fmt, ARGS )
 #endif
 
-#define SW_VERSION          "0.3.6"
+#define SW_VERSION          "0.0.1"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -97,34 +89,17 @@
 #define BLYNK_DARK_BLUE     "#5F7CD8"
 
 /* PIN definitions */
-#define DHTPIN              (12)
-#define DHTTYPE             (DHT22)   // DHT 22  (AM2302), AM2321
 
-#define LED_R_PIN           (15)
-#define LED_G_PIN           (14)
-#define LED_Y_PIN           (16)
-#define ADC_PIN             (A0)
-#define BUTTON_S1_PIN       (10)
-#define BUTTON_S2_PIN       (0)
-#define RELAY_PIN           (15)
 
 /* Sketch parameters */
 #define FILTER_POINTS       (6)
 
 #define TIMER_MAIN_CYCLE    (10000L)
 #define TIMER_READ_MHZ19    (10000L)
-#define TIMER_READ_DHT22    (20000L)
 #define TIMER_NOTIFY        (20000L)
 #define TIMER_SEND_RESULTS  (20000L)
 #define TIMER_SEND_UPTIME   (10000L)
-#define TIMER_READ_ADC      (60000L)
 #define TIMER_CLEAR_ERRORS  (86400000L)
-
-#define LED_BRIGHT          (300)
-#define LED_DIMMED          (20)
-#define LED_OFF             (0)
-#define LED_HOUR_ENABLE     (8)
-#define LED_HOUR_DISABLE    (22)
 
 #define CO2_LEVEL_AVERAGE   (700)
 #define CO2_LEVEL_POOR      (1100)
@@ -133,47 +108,26 @@
  *      Code starts here
  * ------------------------- */ 
 
-DHT dht( DHTPIN, DHTTYPE );
 Ticker ticker;
-SoftwareSerial co2Serial( 5, 4, false, 256 );
+SoftwareSerial co2Serial( D6, D5, false, 256 );
 BlynkTimer timer;
 WiFiUDP ntpUDP;
 NTPClient timeClient( ntpUDP, 10800 );  // +3 hours time offset
 
-typedef enum 
-{
-    Led_None     = 0,
-    Led_Green    = 1 << 0,
-    Led_Yellow   = 1 << 1,
-    Led_Red      = 1 << 2,
-} LedColors_t;
-
-char Hostname[ 32 ] = "FreshWindAir";
+char Hostname[ 32 ] = "OfficeFreshAir";
 
 char blynk_token[ 34 ];
 char blynk_server[ 40 ];
 char blynk_port[ 6 ];
 
-int ledXState = LED_BRIGHT;
-
 int mhz19_errors = 0;
-int dht22_errors = 0;
-
-float h = 0;
-float t = 0;
-float f = 0;
-float hi = 0;   // heat index
-
 int ppm;
 int average_ppm_sum;
 int average_ppm_prev;
 int average_ppm_diff;
 std::vector<int> ppm_values( FILTER_POINTS, 0 );
 
-int adcvalue;
-float temp_correction = 3;      // default enabled for internal DHT sensor. -3C -1F
 bool notify_flag = false;       // flag that notification sent to user
-bool notify_flag_beep = false;  // beep works if true
 bool shouldSaveConfig = false;  // flag for saving data
 bool online = true;
 
@@ -254,36 +208,11 @@ static byte getCRC( byte inBytes[], int size )
     return CRC;
 }
 
-static void setLeds( int colors )
-{
-    int newGreenState = 0;
-    int newYellowState = 0;
-    int newRedState = 0;
-
-    if ( colors & Led_Green ) 
-    {
-        newGreenState = ledXState;
-    }
-    if ( colors & Led_Yellow ) 
-    {
-        newYellowState = ledXState;
-    }
-    if ( colors & Led_Red )
-    {
-        newRedState = ledXState;
-    }    
-    analogWrite( LED_G_PIN, newGreenState );
-    analogWrite( LED_Y_PIN, newYellowState );
-    analogWrite( LED_R_PIN, newRedState );
-}
-
 static void restartMcu()
 {
     BLYNK_MSG( "Restart in 3..2..1.." );
     SERIAL_MSG( "Restart in 3..2..1.." );
-
-    setLeds( Led_Green | Led_Yellow | Led_Red );
-    
+   
     ESP.restart();
 }
 
@@ -347,71 +276,6 @@ BLYNK_WRITE( V103 )
     }
 }
 
-BLYNK_WRITE( V105 )
-{
-    int v105 = param.asInt();
-
-    if ( v105 != 0 )
-    {
-        notify_flag_beep = true;
-    }
-    else
-    {
-        notify_flag_beep = false;
-    }
-}
-
-BLYNK_WRITE( V107 )
-{
-    float v107 = param.asInt();
-
-    temp_correction = v107;
-
-    SERIAL_DBG( "temp_correction (C): %.1f", temp_correction );
-    BLYNK_MSG( "temp_correction (C): %f", temp_correction );
-}
-
-BLYNK_WRITE( V110 )
-{
-    ledXState = param.asInt();
-
-    if ( ledXState < 100 )
-    {
-        ledXState = 100;
-    }
-    if ( ledXState > 1000 )
-    {
-        ledXState = 1000;
-    }
-    SERIAL_DBG( "ledXState: %d", ledXState );
-}
-
-void tick()
-{
-    //toggle state
-    int state = digitalRead( LED_R_PIN );  // get the current state of Pin
-    digitalWrite( LED_R_PIN, !state );     // set Pin to the opposite state
-}
-
-// toggle LED state. for future use
-void led_toggle_r()
-{
-    int state = digitalRead( LED_R_PIN );  // get the current state of Pin
-    digitalWrite( LED_R_PIN, !state );     // set Pin to the opposite state
-}
-
-void led_toggle_g()
-{
-    int state = digitalRead( LED_G_PIN );  // get the current state of Pin
-    digitalWrite( LED_G_PIN, !state );     // set Pin to the opposite state
-}
-
-void led_toggle_y()
-{
-    int state = digitalRead( LED_Y_PIN );  // get the current state of Pin
-    digitalWrite( LED_Y_PIN, !state );     // set Pin to the opposite state
-}
-
 /* -------------------------
  *      WiFi Manager cb
  * ------------------------- */ 
@@ -425,8 +289,6 @@ void configModeCallback( WiFiManager* myWiFiManager )
     SERIAL_DBG( "%s", WiFi.softAPIP().toString().c_str() );
     //if you used auto generated SSID, print it
     SERIAL_DBG( "%s", myWiFiManager->getConfigPortalSSID().c_str() );
-    //entered config mode, make led toggle faster
-    ticker.attach( 0.2, led_toggle_r );
 }
 
 void saveConfigCallback()
@@ -434,7 +296,6 @@ void saveConfigCallback()
     //callback notifying us of the need to save config
     SERIAL_DBG( "Should save config" );
     shouldSaveConfig = true;
-    ticker.attach( 0.2, led_toggle_r );  // led toggle faster
 }
 
 /* -------------------------
@@ -461,14 +322,6 @@ void notify()
         BLYNK_MSG( "Sending notify to phone. ppm > %d", CO2_LEVEL_POOR );
         SERIAL_DBG( "Sending notify to phone. CO2 level > %d", CO2_LEVEL_POOR );
 
-        if ( notify_flag_beep )
-        {
-            tones( 13, 1000, 50 );
-            delay( 50 );
-            tones( 13, 1000, 50 );
-            delay( 50 );
-            tones( 13, 1000, 50 );
-        }
         notify_flag = true;
     }
 
@@ -549,7 +402,7 @@ void readMHZ19()
     {
         led2.on();
         led2.setColor( BLYNK_GREEN );
-        SERIAL_DBG( "Reading MHZ19 sensor ok" );
+        SERIAL_DBG( "Reading MHZ19 sensor ok, value: %d", ppm );
 
         /* Update average value if read ok */
         ppm_values.erase( ppm_values.begin() );
@@ -565,23 +418,17 @@ void readMHZ19()
         }
         /* Set led indication */
         if ( average_ppm_sum < CO2_LEVEL_AVERAGE )
-        {
-            setLeds( Led_Green );
-    
+        {  
             led1.on();
             led1.setColor( BLYNK_GREEN );
         }
         else if ( average_ppm_sum < CO2_LEVEL_POOR )
-        {
-            setLeds( Led_Yellow );
-    
+        {    
             led1.on();
             led1.setColor( BLYNK_YELLOW );
         }
         else 
-        {
-            setLeds( Led_Red );
-    
+        {   
             led1.on();
             led1.setColor( BLYNK_RED );
         }
@@ -598,67 +445,6 @@ void readMHZ19()
     }
 
     SERIAL_DBG( "End" );
-}
-
-void readDHT22()
-{
-    SERIAL_DBG( "Start" );    
-      
-    bool DHTreadOK = false;
-    int i = 0;
-    while ( i < 5 && !DHTreadOK )
-    {
-        float local_h = dht.readHumidity();
-        float local_t = dht.readTemperature();
-        float local_f = dht.readTemperature( true ); // Read temperature as Fahrenheit (isFahrenheit = true)   
-
-        if ( isnan( local_h ) || isnan( local_t ) || isnan( local_f ) )
-        {
-            i++;
-
-            delay( i * 75 );
-        }
-        else
-        {
-            DHTreadOK = true;
-
-            h = local_h;
-            t = local_t - temp_correction;
-            f = local_f - 1;
-            hi = dht.computeHeatIndex( t, h, false );
-        }
-    }
-    if ( DHTreadOK )
-    {
-        led2.on();
-        led2.setColor( BLYNK_GREEN );
-        SERIAL_DBG( "Reading DHT22 sensor ok" );
-    }
-    else
-    {
-        dht22_errors++;
-        
-        led2.on();
-        led2.setColor( BLYNK_RED );
-
-        SERIAL_ERR( "Reading DHT22 sensor failed" );
-        BLYNK_MSG( "Reading DHT22 sensor failed" );
-    }
-
-    SERIAL_DBG( "End" );        
-}
-
-void readADC()
-{
-    SERIAL_DBG( "Start" );    
-  
-    adcvalue = analogRead( ADC_PIN );
-    if ( Blynk.connected() )
-    {
-        Blynk.virtualWrite( V5, adcvalue );
-    }
-
-    SERIAL_DBG( "End" );        
 }
 
 void SayHello()
@@ -679,9 +465,6 @@ void SayHello()
     SERIAL_MSG( "====== BLYNK-STATUS =================================" );
     SERIAL_MSG( "Blynk token: %s", blynk_token );
     SERIAL_MSG( "Blynk connected: %d", Blynk.connected() );
-    SERIAL_MSG( "Beep: %d", notify_flag_beep );
-    SERIAL_MSG( "Temperature correction: %.1f C", temp_correction );
-    SERIAL_MSG( "ledXState: %d", ledXState );
 
     SERIAL_MSG( "====== NETWORK-STATUS ===============================" );
     SERIAL_MSG( "WiFi network: %s", WiFi.SSID().c_str() );
@@ -695,18 +478,6 @@ void SayHello()
 
 }
 
-void tones( uint8_t _pin, unsigned int frequency, unsigned long duration )
-{
-    if ( notify_flag_beep )
-    {
-        pinMode( _pin, OUTPUT );
-        analogWriteFreq( frequency );
-        analogWrite( _pin, 500 );
-        delay( duration );
-        analogWrite( _pin, 0 );
-    }
-}
-
 void sendUptime()
 {
     SERIAL_DBG( "Start" );    
@@ -717,7 +488,6 @@ void sendUptime()
         Blynk.virtualWrite( V8, getFormattedUptime() );
 
         Blynk.virtualWrite( V97, mhz19_errors );
-        Blynk.virtualWrite( V98, dht22_errors );
     }
 
     SERIAL_DBG( "End" );        
@@ -727,11 +497,6 @@ void sendResults()
 {
     SERIAL_DBG( "Start" );    
   
-    /* DHT info */
-    Blynk.virtualWrite( V1, h );
-    Blynk.virtualWrite( V2, t );
-    Blynk.virtualWrite( V3, f );
-    Blynk.virtualWrite( V7, hi );
     /* MHZ-19 info */
     Blynk.virtualWrite( V4, average_ppm_sum );
     Blynk.virtualWrite( V6, average_ppm_diff );
@@ -740,7 +505,6 @@ void sendResults()
     average_ppm_prev = average_ppm_sum;
 
 #if 0
-    BLYNK_MSG( "Home weather : %.1f %%, %.1f C, %.1f C", h, t, hi );
     BLYNK_MSG( "C02 average  : %d ppm (diff: %d ppm)", average_ppm_sum, average_ppm_diff );
 
     SERIAL_DBG( "===================================================" );
@@ -760,13 +524,11 @@ void sendResults()
 void clearErrors()
 {
     mhz19_errors = 0;
-    dht22_errors = 0;
 }
 
 void mainCycle() 
 {
     readMHZ19();
-    readDHT22();
     notify();
     sendUptime();
     sendResults();
@@ -783,21 +545,6 @@ void setup()
 
     /* Wait MHZ-19 to become ready */
     delay( 5000 );
-
-    dht.begin();
-
-    pinMode( BUTTON_S1_PIN, INPUT );
-    pinMode( BUTTON_S2_PIN, INPUT );
-    //pinMode( RELAY_PIN, OUTPUT );
-    pinMode( ADC_PIN, INPUT );
-    pinMode( LED_R_PIN, OUTPUT );
-    pinMode( LED_G_PIN, OUTPUT );
-    pinMode( LED_Y_PIN, OUTPUT );
-
-    tones( 13, 1000, 100 );
-
-    // start ticker with 0.5 because we start in AP mode and try to connect
-    ticker.attach( 0.6, led_toggle_r ); //tick
 
     // Check flash size   
     if ( ESP.getFlashChipRealSize() == ESP.getFlashChipSize() )
@@ -856,20 +603,11 @@ void setup()
     // After connecting, parameter.getValue() will get you the configured value
     // id/name placeholder/prompt default length
 
-    WiFiManagerParameter
-    custom_blynk_token( "blynk", "blynk token", blynk_token, 33 );   // was 32 length ???
+    WiFiManagerParameter custom_blynk_token( "blynk", "blynk token", blynk_token, 33 );   // was 32 length ???
 
     //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
     WiFiManager wifiManager;
-
-    // WiFi credentials will be reseted if button S1 will be pressed during boot
-    int buttonS1State = digitalRead( BUTTON_S1_PIN );
-    if ( buttonS1State == 0 )
-    {
-        SERIAL_DBG( "Reset Wi-Fi settings" );
-        wifiManager.resetSettings();
-    }
 
     //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
     wifiManager.setAPCallback( configModeCallback );
@@ -886,7 +624,7 @@ void setup()
     //fetches ssid and pass and tries to connect
     //if it does not connect it starts an access point with the specified name
 
-    if ( !wifiManager.autoConnect( "FreshWindAir - tap to config" ) )
+    if ( !wifiManager.autoConnect( "OfficeFreshAir - tap to config" ) )
     {
         if ( blynk_token[ 0 ] != '\0' )
         {
@@ -898,7 +636,6 @@ void setup()
         {
             SERIAL_ERR( "Failed to go online, offline mode activated" );
             online = false;
-            tones( 13, 2000, 50 );
         }
     }
 
@@ -906,8 +643,6 @@ void setup()
 
     if ( online )
     {
-        tones( 13, 1500, 30 );
-
         strcpy( blynk_token, custom_blynk_token.getValue() );    //read updated parameters
 
         if ( shouldSaveConfig )
@@ -949,9 +684,14 @@ void setup()
         else
         {
             SERIAL_DBG( "blynk auth token not set" );
+
+            SERIAL_DBG( "Reset Wi-Fi settings" );
+            wifiManager.resetSettings();
+
+            restartMcu();            
         }
 
-        SERIAL_DBG( "FreshWindAir is ready!" );
+        SERIAL_DBG( "OfficeFreshAir is ready!" );
         
         SERIAL_DBG( "Start time sync client\n\r" );
         timeClient.begin();
@@ -959,17 +699,8 @@ void setup()
 
     timer.setInterval( TIMER_MAIN_CYCLE, mainCycle );
     timer.setInterval( TIMER_CLEAR_ERRORS, clearErrors );
-    
-    // timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
-    // timer.setInterval( TIMER_READ_DHT22, readDHT22 );
-    // timer.setInterval( TIMER_NOTIFY, notify );
-    // timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
-    // timer.setInterval( TIMER_SEND_RESULTS, sendResults );
-    // timer.setInterval( TIMER_READ_ADC, readADC );
-    
-    // Serial.setDebugOutput( true );
 
-    BLYNK_MSG( "------ FreshWindAir started! ------" );
+    BLYNK_MSG( "------ OfficeFreshAir started! ------" );
     BLYNK_MSG( "------     version: %s    ------", SW_VERSION );
 
     ESP.wdtDisable();
@@ -1031,57 +762,11 @@ void loop()
     timer.run();
     ESP.wdtFeed();
 
-    /* Disable led indication for evening */
-    if ( timeClient.getHours() >= LED_HOUR_DISABLE || timeClient.getHours() < LED_HOUR_ENABLE )
-    {
-        ledXState = LED_OFF;
-    }
-    else 
-    {
-        ledXState = LED_BRIGHT;
-    }
-
-    /* Buttons handling */
-    int buttonS1State = digitalRead( BUTTON_S1_PIN );
-    int buttonS2State = digitalRead( BUTTON_S2_PIN );
-
-    if ( buttonS2State == 0 )
-    {
-        restartMcu();
-    }
-
-    static unsigned long lastCalibrationTime = 0;
-    static bool calibrationStatus = false;
-    if ( buttonS1State == 0 )
-    {
-        if ( millis() - lastCalibrationTime > 5000 )
-        {         
-            if ( calibrationStatus )
-            {
-                SERIAL_DBG( "Set MHZ-19 ABC on..." );
-                BLYNK_MSG( "Set MHZ-19 ABC on..." );
-
-                co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
-            } 
-            else 
-            {
-                SERIAL_DBG( "Set MHZ-19 ABC off..." );
-                BLYNK_MSG( "Set MHZ-19 ABC off..." );
-
-                co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
-            }
-
-            calibrationStatus = !calibrationStatus;  
-            lastCalibrationTime = millis();
-        }
-    }
-
     while ( Serial.available() > 0 )
     {
-        if ( Serial.read() == '\r' || Serial.read() == '\n' )
+        if ( Serial.read() == ' ' )
         {
             SayHello();
-            tones( 13, 1000, 100 );
         }
     }
 }
