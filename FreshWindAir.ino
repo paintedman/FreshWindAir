@@ -56,7 +56,7 @@
  * ------------------------- */ 
 
 #define ENABLE_LOGS         (0)
-#define ENABLE_DEBUG_LOGS   (0)
+#define ENABLE_DEBUG_LOGS   (1)
 
 #define ENABLE_BLYNK_LOGS   (1)
 
@@ -87,8 +87,8 @@
 #else
     #define BLYNK_MSG( fmt, ARGS )
 #endif
-
-#define SW_VERSION          "0.3.6"
+ 
+#define SW_VERSION          "0.3.9"
 
 #define BLYNK_GREEN         "#23C48E"
 #define BLYNK_BLUE          "#04C0F8"
@@ -111,12 +111,11 @@
 /* Sketch parameters */
 #define FILTER_POINTS       (6)
 
-#define TIMER_MAIN_CYCLE    (10000L)
 #define TIMER_READ_MHZ19    (10000L)
-#define TIMER_READ_DHT22    (20000L)
-#define TIMER_NOTIFY        (20000L)
-#define TIMER_SEND_RESULTS  (20000L)
-#define TIMER_SEND_UPTIME   (10000L)
+#define TIMER_READ_DHT22    (10000L)
+#define TIMER_NOTIFY        (30000L)
+#define TIMER_SEND_RESULTS  (30000L)
+#define TIMER_SEND_UPTIME   (30000L)
 #define TIMER_READ_ADC      (60000L)
 #define TIMER_CLEAR_ERRORS  (86400000L)
 
@@ -135,10 +134,10 @@
 
 DHT dht( DHTPIN, DHTTYPE );
 Ticker ticker;
-SoftwareSerial co2Serial( 5, 4, false, 256 );
+SoftwareSerial co2Serial( 5, 4, false );
 BlynkTimer timer;
 WiFiUDP ntpUDP;
-NTPClient timeClient( ntpUDP, 10800 );  // +3 hours time offset
+NTPClient timeClient( ntpUDP );
 
 typedef enum 
 {
@@ -283,7 +282,7 @@ static void restartMcu()
     SERIAL_MSG( "Restart in 3..2..1.." );
 
     setLeds( Led_Green | Led_Yellow | Led_Red );
-    
+
     ESP.restart();
 }
 
@@ -426,7 +425,7 @@ void configModeCallback( WiFiManager* myWiFiManager )
     //if you used auto generated SSID, print it
     SERIAL_DBG( "%s", myWiFiManager->getConfigPortalSSID().c_str() );
     //entered config mode, make led toggle faster
-    ticker.attach( 0.2, led_toggle_r );
+    ticker.attach( 0.5, led_toggle_r );
 }
 
 void saveConfigCallback()
@@ -615,8 +614,7 @@ void readDHT22()
         if ( isnan( local_h ) || isnan( local_t ) || isnan( local_f ) )
         {
             i++;
-
-            delay( i * 75 );
+            delay( 100 );
         }
         else
         {
@@ -763,15 +761,6 @@ void clearErrors()
     dht22_errors = 0;
 }
 
-void mainCycle() 
-{
-    readMHZ19();
-    readDHT22();
-    notify();
-    sendUptime();
-    sendResults();
-}
-
 // Setup
 void setup()
 {
@@ -795,9 +784,6 @@ void setup()
     pinMode( LED_Y_PIN, OUTPUT );
 
     tones( 13, 1000, 100 );
-
-    // start ticker with 0.5 because we start in AP mode and try to connect
-    ticker.attach( 0.6, led_toggle_r ); //tick
 
     // Check flash size   
     if ( ESP.getFlashChipRealSize() == ESP.getFlashChipSize() )
@@ -852,12 +838,14 @@ void setup()
     }
     //end read
 
+    // start ticker with 0.5 because we start in AP mode and try to connect
+    // ticker.attach( 0.6, led_toggle_r ); //tick
+
     // The extra parameters to be configured (can be either global or just in the setup)
     // After connecting, parameter.getValue() will get you the configured value
     // id/name placeholder/prompt default length
 
-    WiFiManagerParameter
-    custom_blynk_token( "blynk", "blynk token", blynk_token, 33 );   // was 32 length ???
+    WiFiManagerParameter custom_blynk_token( "blynk", "blynk token", blynk_token, 33 );   // was 32 length ???
 
     //WiFiManager
     //Local intialization. Once its business is done, there is no need to keep it around
@@ -884,15 +872,14 @@ void setup()
     wifiManager.setTimeout( 300 );   // 5 minutes to enter data and then ESP resets to try again.
 
     //fetches ssid and pass and tries to connect
-    //if it does not connect it starts an access point with the specified name
-
+    //if it does not connect it starts an access point with the specified name   
     if ( !wifiManager.autoConnect( "FreshWindAir - tap to config" ) )
     {
         if ( blynk_token[ 0 ] != '\0' )
         {
             SERIAL_ERR( "Failed to go online for Blynk, restarting.." );
             delay( 2000 );
-            ESP.restart();
+            restartMcu();
         }
         else
         {
@@ -907,6 +894,18 @@ void setup()
     if ( online )
     {
         tones( 13, 1500, 30 );
+
+        // 300 seconds timeout to synchronize time
+        SERIAL_DBG( "Start time sync client\n\r" );
+        timeClient.begin();
+        timeClient.forceUpdate();
+        
+        while( timeClient.getEpochTime() < 300 )
+        {
+            SERIAL_ERR( "Waiting to get NTP time..." );
+            delay( 1000 );
+        }
+        timeClient.setTimeOffset( 10800 );  // +3 hours
 
         strcpy( blynk_token, custom_blynk_token.getValue() );    //read updated parameters
 
@@ -931,7 +930,7 @@ void setup()
 
             delay( 1000 );
             SERIAL_DBG( "Restart ESP to apply new WiFi settings.." );
-            ESP.restart();
+            restartMcu();
         }
 
         SERIAL_DBG( "WiFi network: %s", WiFi.SSID().c_str() );
@@ -952,25 +951,20 @@ void setup()
         }
 
         SERIAL_DBG( "FreshWindAir is ready!" );
-        
-        SERIAL_DBG( "Start time sync client\n\r" );
-        timeClient.begin();
     }
 
-    timer.setInterval( TIMER_MAIN_CYCLE, mainCycle );
     timer.setInterval( TIMER_CLEAR_ERRORS, clearErrors );
     
-    // timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
-    // timer.setInterval( TIMER_READ_DHT22, readDHT22 );
-    // timer.setInterval( TIMER_NOTIFY, notify );
-    // timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
-    // timer.setInterval( TIMER_SEND_RESULTS, sendResults );
+    timer.setInterval( TIMER_READ_MHZ19, readMHZ19 );
+    timer.setInterval( TIMER_READ_DHT22, readDHT22 );
+    timer.setInterval( TIMER_NOTIFY, notify );
+    timer.setInterval( TIMER_SEND_UPTIME, sendUptime );
+    timer.setInterval( TIMER_SEND_RESULTS, sendResults );
     // timer.setInterval( TIMER_READ_ADC, readADC );
     
     // Serial.setDebugOutput( true );
-
-    BLYNK_MSG( "------ FreshWindAir started! ------" );
-    BLYNK_MSG( "------     version: %s    ------", SW_VERSION );
+    
+    BLYNK_MSG( "------ FreshWindAir, v.%s ------", SW_VERSION );
 
     ESP.wdtDisable();
 }
@@ -980,7 +974,7 @@ void loop()
 {
     static bool wifilost_flag = false;
     static int wifilost_timer_start;
-    static int wifilost_timer_max = 60; // 60 sec timeout for reset if WiFi connection lost
+    static int wifilost_timer_max = 300; // 300 sec timeout for reset if WiFi connection lost
   
     if ( WiFi.status() == WL_CONNECTED )
     {
@@ -998,19 +992,18 @@ void loop()
             {
                 SERIAL_DBG( "Reconnecting to blynk.. " );
                 SERIAL_DBG( "Blynk connected: %d", Blynk.connected() );
-                if ( !_blynkWifiClient.connected() )
-                {
-                    connectBlynk();
-                    return;
-                }
+                // if ( !_blynkWifiClient.connected() )
+                // {
+                //     connectBlynk();
+                //     return;
+                // }
 
                 //FIXME: add exit after n-unsuccesfull tries.
-                Blynk.connect( 4000 );
+                Blynk.connect( 5000 );
                 SERIAL_DBG( "Blynk connected: %d", Blynk.connected() );
             }
         }
     }
-
     if ( WiFi.status() != WL_CONNECTED && online )
     {
         int uptime = millis() / 1000;
@@ -1023,8 +1016,10 @@ void loop()
         if ( ( ( uptime - wifilost_timer_start ) > wifilost_timer_max ) && wifilost_flag )
         {
             SERIAL_ERR( "WiFi connection lost, restarting.." );
-            wifilost_flag = false;
-            ESP.restart();
+            ticker.attach( 1, led_toggle_y ); //tick
+            
+            // wifilost_flag = false;
+            // restartMcu();
         }
     }
 
@@ -1042,46 +1037,46 @@ void loop()
     }
 
     /* Buttons handling */
-    int buttonS1State = digitalRead( BUTTON_S1_PIN );
-    int buttonS2State = digitalRead( BUTTON_S2_PIN );
+    // int buttonS1State = digitalRead( BUTTON_S1_PIN );
+    // int buttonS2State = digitalRead( BUTTON_S2_PIN );
 
-    if ( buttonS2State == 0 )
-    {
-        restartMcu();
-    }
+    // if ( buttonS2State == 0 )
+    // {
+    //     restartMcu();
+    // }
 
-    static unsigned long lastCalibrationTime = 0;
-    static bool calibrationStatus = false;
-    if ( buttonS1State == 0 )
-    {
-        if ( millis() - lastCalibrationTime > 5000 )
-        {         
-            if ( calibrationStatus )
-            {
-                SERIAL_DBG( "Set MHZ-19 ABC on..." );
-                BLYNK_MSG( "Set MHZ-19 ABC on..." );
+    // static unsigned long lastCalibrationTime = 0;
+    // static bool calibrationStatus = false;
+    // if ( buttonS1State == 0 )
+    // {
+    //     if ( millis() - lastCalibrationTime > 5000 )
+    //     {         
+    //         if ( calibrationStatus )
+    //         {
+    //             SERIAL_DBG( "Set MHZ-19 ABC on..." );
+    //             BLYNK_MSG( "Set MHZ-19 ABC on..." );
 
-                co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
-            } 
-            else 
-            {
-                SERIAL_DBG( "Set MHZ-19 ABC off..." );
-                BLYNK_MSG( "Set MHZ-19 ABC off..." );
+    //             co2Serial.write( MHZ19Cmd_setAbcOn, 9 );
+    //         } 
+    //         else 
+    //         {
+    //             SERIAL_DBG( "Set MHZ-19 ABC off..." );
+    //             BLYNK_MSG( "Set MHZ-19 ABC off..." );
 
-                co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
-            }
+    //             co2Serial.write( MHZ19Cmd_setAbcOff, 9 );
+    //         }
 
-            calibrationStatus = !calibrationStatus;  
-            lastCalibrationTime = millis();
-        }
-    }
+    //         calibrationStatus = !calibrationStatus;  
+    //         lastCalibrationTime = millis();
+    //     }
+    // }
 
-    while ( Serial.available() > 0 )
-    {
-        if ( Serial.read() == '\r' || Serial.read() == '\n' )
-        {
-            SayHello();
-            tones( 13, 1000, 100 );
-        }
-    }
+    // while ( Serial.available() > 0 )
+    // {
+    //     if ( Serial.read() == '\r' || Serial.read() == '\n' )
+    //     {
+    //         SayHello();
+    //         tones( 13, 1000, 100 );
+    //     }
+    // }
 }
