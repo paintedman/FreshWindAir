@@ -19,7 +19,7 @@ void Indication::clear() {
 
 void Indication::setBrightness( int value ) {
     if ( value < 100 ) {
-        value = 100;
+        value = 0;
     }
     if ( value > 1000 ) {
         value = 1000;
